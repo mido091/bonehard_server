@@ -25,7 +25,7 @@ const app = express();
 // Trust the first proxy hop (Vercel's load balancer).
 // Without this, express-rate-limit cannot read X-Forwarded-For and throws ERR_ERL_FORWARDED_HEADER.
 app.set("trust proxy", 1);
-
+// ssl
 // ── Raw CORS headers — runs FIRST, before helmet or anything else ────────────
 // On Vercel serverless functions the cors() package can sometimes be bypassed
 // by helmet or cold-start timing. Setting headers manually guarantees that every
