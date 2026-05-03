@@ -1,5 +1,4 @@
 import express from "express";
-import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import { env, isProduction } from "./config/env.js";
@@ -23,41 +22,46 @@ import { sendSuccess } from "./utils/apiResponse.js";
 
 const app = express();
 
-// ── CORS configuration ──────────────────────────────────────────────────────
-// Must be registered BEFORE helmet so that preflight OPTIONS responses carry
-// the correct Access-Control-Allow-* headers and are not blocked by Helmet.
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. curl, server-to-server, same-origin)
-    if (!origin) return callback(null, true);
+// ── Raw CORS headers — runs FIRST, before helmet or anything else ────────────
+// On Vercel serverless functions the cors() package can sometimes be bypassed
+// by helmet or cold-start timing. Setting headers manually guarantees that every
+// response (including preflight OPTIONS) always carries the right CORS headers.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = env.frontendOrigins;
 
-    if (env.frontendOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+  // Reflect the exact requesting origin when it's in the allow-list,
+  // otherwise leave the header unset (browser will block it — correct behavior).
+  if (origin && allowed.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else if (!origin) {
+    // Non-browser requests (curl, server-to-server) — allow through
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
 
-    callback(new Error(`CORS blocked for origin: ${origin}`));
-  },
-  credentials: true,
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "x-csrf-token",
-    "x-requested-with",
-  ],
-  exposedHeaders: ["x-csrf-token"],
-  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-};
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type,Authorization,x-csrf-token,x-requested-with"
+  );
+  res.setHeader("Access-Control-Expose-Headers", "x-csrf-token");
+  res.setHeader("Access-Control-Max-Age", "86400"); // Cache preflight 24h
 
-// Handle preflight (OPTIONS) before any other middleware
-app.options("*", cors(corsOptions));
+  // Terminate preflight immediately — no further middleware needed
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
-// Middleware — order matters:
-// 1. cors() must run BEFORE helmet() so CORS headers on preflight aren't removed
-// 2. cors() before cookieParser/json so OPTIONS responds immediately
-app.use(cors(corsOptions));
+  next();
+});
+
+// Helmet — runs AFTER CORS headers are already set
 app.use(
   helmet({
-    // Allow cross-origin resource sharing — helmet's defaults block it
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: false,
   })
