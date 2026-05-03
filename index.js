@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
-import { env } from "./config/env.js";
+import { env, isProduction } from "./config/env.js";
 import { testDatabaseConnection } from "./config/db.js";
 import adminRoutes from "./routes/admin.routes.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -23,12 +23,45 @@ import { sendSuccess } from "./utils/apiResponse.js";
 
 const app = express();
 
-// Middleware
-app.use(helmet());
-app.use(cors({
-    origin: env.frontendOrigins,
-    credentials: true,
-}));
+// ── CORS configuration ──────────────────────────────────────────────────────
+// Must be registered BEFORE helmet so that preflight OPTIONS responses carry
+// the correct Access-Control-Allow-* headers and are not blocked by Helmet.
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. curl, server-to-server, same-origin)
+    if (!origin) return callback(null, true);
+
+    if (env.frontendOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-csrf-token",
+    "x-requested-with",
+  ],
+  exposedHeaders: ["x-csrf-token"],
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+};
+
+// Handle preflight (OPTIONS) before any other middleware
+app.options("*", cors(corsOptions));
+
+// Middleware — order matters:
+// 1. cors() must run BEFORE helmet() so CORS headers on preflight aren't removed
+// 2. cors() before cookieParser/json so OPTIONS responds immediately
+app.use(cors(corsOptions));
+app.use(
+  helmet({
+    // Allow cross-origin resource sharing — helmet's defaults block it
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: false,
+  })
+);
 app.use(cookieParser());
 app.use(express.json({ limit: "5mb" }));
 app.use(apiLimiter);

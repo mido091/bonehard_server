@@ -30,7 +30,10 @@ const verifyCookieValue = (cookieValue, headerToken) => {
 
 export const csrfCookieOptions = {
   httpOnly: true,
-  sameSite: isProduction ? "strict" : "lax",
+  // "none" + secure is required when the frontend and backend are on different
+  // origins (e.g. bonehard.vercel.app → bonehard-server.vercel.app).
+  // "strict" would silently drop the cookie on cross-origin requests.
+  sameSite: isProduction ? "none" : "lax",
   secure: isProduction,
   path: "/",
   maxAge: 8 * 60 * 60 * 1000,
