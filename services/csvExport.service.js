@@ -1,10 +1,9 @@
-import archiver from "archiver";
 import { getDashboardAnalytics } from "../repositories/adminDashboard.repository.js";
 import { getAssignableUsers } from "../repositories/user.repository.js";
 import { listCaseFiles, listCaseGeneralNotes, listCustomFields } from "../repositories/caseExtra.repository.js";
 import { getAdminUserOrderDetails, getCaseDetails } from "./case.service.js";
 
-const ZIP_MIME = "application/zip";
+const CSV_MIME = "text/csv; charset=utf-8";
 
 const sanitizeFileName = (value, fallback = "export") => {
   const cleaned = String(value || fallback)
@@ -74,33 +73,32 @@ const escapeCsvCell = (value) => {
   return `"${text.replace(/"/g, '""')}"`;
 };
 
-const toCsv = (headers, rows) => {
+const toCsvRows = (headers, rows) => {
   const headerRow = headers.map((header) => escapeCsvCell(header.label)).join(",");
   const dataRows = rows.map((row) => headers
     .map((header) => escapeCsvCell(row[header.key]))
     .join(","));
-  return `${[headerRow, ...dataRows].join("\r\n")}\r\n`;
+  return [headerRow, ...dataRows];
 };
 
-const appendCsv = (archive, name, headers, rows) => {
-  archive.append(toCsv(headers, rows || []), { name });
-};
+const toSectionedCsv = (sections) => {
+  const lines = [];
 
-const sendCsvZip = async (res, packageName, files) => {
-  const safePackageName = sanitizeFileName(packageName, "csv-export");
-  const archive = archiver("zip", { zlib: { level: 9 } });
-
-  res.setHeader("Content-Type", ZIP_MIME);
-  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${safePackageName}.zip`)}`);
-
-  archive.on("error", (error) => {
-    if (!res.headersSent) res.status(500).end();
-    else res.destroy(error);
+  sections.forEach((section, index) => {
+    if (index > 0) lines.push("");
+    lines.push(escapeCsvCell(section.title));
+    lines.push(...toCsvRows(section.headers, section.rows || []));
   });
 
-  archive.pipe(res);
-  files.forEach((file) => appendCsv(archive, file.name, file.headers, file.rows));
-  await archive.finalize();
+  return `\uFEFF${lines.join("\r\n")}\r\n`;
+};
+
+const sendCsvFile = (res, packageName, sections) => {
+  const safePackageName = sanitizeFileName(packageName, "csv-export");
+
+  res.setHeader("Content-Type", CSV_MIME);
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${safePackageName}.csv`)}`);
+  res.send(toSectionedCsv(sections));
 };
 
 const pairRows = (record) => Object.entries(record).map(([field, value]) => ({ field, value }));
@@ -129,9 +127,9 @@ export const exportDashboardCsvPackage = async (userId, res) => {
   const charts = data.charts || {};
   const lists = data.lists || {};
 
-  await sendCsvZip(res, `operations_dashboard_${new Date().toISOString().slice(0, 10)}`, [
+  sendCsvFile(res, `operations_dashboard_${new Date().toISOString().slice(0, 10)}`, [
     {
-      name: "summary.csv",
+      title: "Summary",
       headers: keyValueHeaders,
       rows: pairRows({
         generatedAt: data.generatedAt,
@@ -155,7 +153,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       }),
     },
     {
-      name: "profit.csv",
+      title: "Profit",
       headers: keyValueHeaders,
       rows: pairRows({
         total: formatMoney(profit.total),
@@ -168,7 +166,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       }),
     },
     {
-      name: "case-status-distribution.csv",
+      title: "Case Status Distribution",
       headers: [
         { key: "statusName", label: "Status" },
         { key: "statusColor", label: "Color" },
@@ -177,7 +175,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       rows: charts.casesByStatus || [],
     },
     {
-      name: "cases-vs-orders-trend.csv",
+      title: "Cases vs Orders Trend",
       headers: [
         { key: "date", label: "Date" },
         { key: "cases", label: "Cases" },
@@ -190,7 +188,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       })),
     },
     {
-      name: "recent-cases.csv",
+      title: "Recent Cases",
       headers: [
         { key: "id", label: "Case ID" },
         { key: "name", label: "Case Name" },
@@ -204,7 +202,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       rows: (lists.recentCases || []).map((row) => ({ ...row, dueDate: formatDate(row.dueDate), createdAt: formatDateTime(row.createdAt) })),
     },
     {
-      name: "latest-orders.csv",
+      title: "Latest Orders",
       headers: [
         { key: "id", label: "Order ID" },
         { key: "name", label: "Order Name" },
@@ -218,7 +216,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       rows: (lists.recentOrders || []).map((row) => ({ ...row, submittedDate: formatDate(row.submittedDate) })),
     },
     {
-      name: "recent-messages.csv",
+      title: "Recent Messages",
       headers: [
         { key: "id", label: "Message ID" },
         { key: "name", label: "Name" },
@@ -231,7 +229,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       rows: (lists.recentMessages || []).map((row) => ({ ...row, createdAt: formatDateTime(row.createdAt) })),
     },
     {
-      name: "recent-users.csv",
+      title: "Recent Users",
       headers: [
         { key: "id", label: "User ID" },
         { key: "name", label: "Name" },
@@ -243,7 +241,7 @@ export const exportDashboardCsvPackage = async (userId, res) => {
       rows: (lists.recentUsers || []).map((row) => ({ ...row, createdAt: formatDateTime(row.createdAt) })),
     },
     {
-      name: "team-workload.csv",
+      title: "Team Workload",
       headers: [
         { key: "type", label: "Type" },
         { key: "id", label: "User ID" },
@@ -276,9 +274,9 @@ export const exportCaseCsvPackage = async (caseId, res) => {
     .map((id) => userById.get(Number(id)))
     .filter(Boolean);
 
-  await sendCsvZip(res, item.name, [
+  sendCsvFile(res, item.name, [
     {
-      name: "case-details.csv",
+      title: "Case Details",
       headers: keyValueHeaders,
       rows: pairRows({
         id: item.id,
@@ -298,7 +296,7 @@ export const exportCaseCsvPackage = async (caseId, res) => {
       }),
     },
     {
-      name: "custom-fields.csv",
+      title: "Custom Fields",
       headers: [
         { key: "key", label: "Key" },
         { key: "label", label: "Label" },
@@ -307,7 +305,7 @@ export const exportCaseCsvPackage = async (caseId, res) => {
       rows: fields,
     },
     {
-      name: "attached-files.csv",
+      title: "Attached Files",
       headers: [
         { key: "id", label: "File ID" },
         { key: "fileName", label: "File Name" },
@@ -318,7 +316,7 @@ export const exportCaseCsvPackage = async (caseId, res) => {
       rows: filesResult.rows.map((file) => ({ ...file, size: formatFileSize(file.fileSize), createdAt: formatDateTime(file.createdAt) })),
     },
     {
-      name: "team-members.csv",
+      title: "Team Members",
       headers: [
         { key: "id", label: "User ID" },
         { key: "name", label: "Name" },
@@ -328,7 +326,7 @@ export const exportCaseCsvPackage = async (caseId, res) => {
       rows: teamMembers,
     },
     {
-      name: "team-notes.csv",
+      title: "Team Notes",
       headers: [
         { key: "id", label: "Note ID" },
         { key: "createdByName", label: "Author" },
@@ -349,9 +347,9 @@ export const exportAdminUserOrderCsvPackage = async (orderId, res) => {
     customFieldRows(order.customFieldValues),
   ]);
 
-  await sendCsvZip(res, order.name, [
+  sendCsvFile(res, order.name, [
     {
-      name: "order-details.csv",
+      title: "Order Details",
       headers: keyValueHeaders,
       rows: pairRows({
         id: order.id,
@@ -366,7 +364,7 @@ export const exportAdminUserOrderCsvPackage = async (orderId, res) => {
       }),
     },
     {
-      name: "custom-fields.csv",
+      title: "Custom Fields",
       headers: [
         { key: "key", label: "Key" },
         { key: "label", label: "Label" },
@@ -375,7 +373,7 @@ export const exportAdminUserOrderCsvPackage = async (orderId, res) => {
       rows: fields,
     },
     {
-      name: "attached-files.csv",
+      title: "Attached Files",
       headers: [
         { key: "id", label: "File ID" },
         { key: "fileName", label: "File Name" },
@@ -386,7 +384,7 @@ export const exportAdminUserOrderCsvPackage = async (orderId, res) => {
       rows: (order.files || []).map((file) => ({ ...file, size: formatFileSize(file.fileSize), createdAt: formatDateTime(file.createdAt) })),
     },
     {
-      name: "team-notes.csv",
+      title: "Team Notes",
       headers: [
         { key: "id", label: "Note ID" },
         { key: "createdByName", label: "Author" },
