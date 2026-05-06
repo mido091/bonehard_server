@@ -9,6 +9,7 @@ import {
   setAdminUserOrderStatus,
 } from "../services/case.service.js";
 import { exportAdminUserOrderPackage } from "../services/exportPackage.service.js";
+import { exportAdminUserOrderCsvPackage, exportDashboardCsvPackage } from "../services/csvExport.service.js";
 import { listTeamsOptions, getUserReport } from "../repositories/caseExtra.repository.js";
 
 import {
@@ -49,6 +50,10 @@ export const dashboard = async (req, res) => {
   sendSuccess(res, { data });
 };
 
+export const exportDashboardCsv = async (req, res) => {
+  await exportDashboardCsvPackage(req.user.id, res);
+};
+
 export const userOptions = async (_req, res) => {
   const users = await getAssignableUsers();
   sendSuccess(res, { data: users });
@@ -76,6 +81,10 @@ export const userOrderDetail = async (req, res) => {
 
 export const exportUserOrderPackage = async (req, res) => {
   await exportAdminUserOrderPackage(req.params.id, res);
+};
+
+export const exportUserOrderCsv = async (req, res) => {
+  await exportAdminUserOrderCsvPackage(req.params.id, res);
 };
 
 export const updateUserOrderStatus = async (req, res) => {

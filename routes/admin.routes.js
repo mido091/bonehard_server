@@ -7,6 +7,8 @@ import {
   createUserRecord,
   dashboard,
   deleteUserRecord,
+  exportDashboardCsv,
+  exportUserOrderCsv,
   notifications,
   readNotification,
   stats,
@@ -80,6 +82,7 @@ const router = Router();
 
 router.use(requireAuth, requireAdminOrAssistant);
 router.get("/dashboard", asyncHandler(dashboard));
+router.get("/dashboard/export-csv", asyncHandler(exportDashboardCsv));
 router.get("/stats", asyncHandler(stats));
 router.get("/payment-settings", requireAdminOnly, asyncHandler(paymentSettings));
 router.patch("/payment-settings", requireAdminOnly, validate(chatPaymentSettingsSchema), asyncHandler(updatePaymentSettings));
@@ -91,6 +94,7 @@ router.get("/user-orders", validate(caseListQuerySchema, "query"), asyncHandler(
 router.get("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"), validate(caseExtraListQuerySchema, "query"), asyncHandler(userOrderNotes));
 router.post("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(createUserOrderNote));
 router.get("/user-orders/:id/export-package", validate(caseIdParamSchema, "params"), asyncHandler(exportUserOrderPackage));
+router.get("/user-orders/:id/export-csv", validate(caseIdParamSchema, "params"), asyncHandler(exportUserOrderCsv));
 router.patch("/user-orders/:id/status", validate(caseIdParamSchema, "params"), validate(statusPayloadSchema), asyncHandler(updateUserOrderStatus));
 router.delete("/user-orders/:id", validate(caseIdParamSchema, "params"), asyncHandler(removeUserOrder));
 router.get("/user-orders/:id", validate(caseIdParamSchema, "params"), asyncHandler(userOrderDetail));

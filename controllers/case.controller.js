@@ -16,6 +16,7 @@ import {
   updateCaseTask,
 } from "../services/case.service.js";
 import { exportCasePackage } from "../services/exportPackage.service.js";
+import { exportCaseCsvPackage } from "../services/csvExport.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 import { casePayloadSchema } from "../validators/case.validator.js";
 
@@ -66,6 +67,10 @@ export const detail = async (req, res) => {
 
 export const exportPackage = async (req, res) => {
   await exportCasePackage(req.params.id, res);
+};
+
+export const exportCsv = async (req, res) => {
+  await exportCaseCsvPackage(req.params.id, res);
 };
 
 export const update = async (req, res) => {

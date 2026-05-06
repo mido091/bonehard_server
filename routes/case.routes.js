@@ -8,6 +8,7 @@ import {
   createWithFiles,
   createTask,
   detail,
+  exportCsv,
   exportPackage,
   list,
   listTasks,
@@ -173,6 +174,7 @@ router.post("/with-files", uploadLimiter, handleCaseFileUpload, asyncHandler(cre
 router.get("/", validate(caseListQuerySchema, "query"), asyncHandler(list));
 router.post("/", validate(casePayloadSchema), asyncHandler(create));
 router.get("/:id/export-package", validate(idParamSchema, "params"), asyncHandler(exportPackage));
+router.get("/:id/export-csv", validate(idParamSchema, "params"), asyncHandler(exportCsv));
 router.get("/:id", validate(idParamSchema, "params"), asyncHandler(detail));
 router.patch("/:id/with-files", validate(idParamSchema, "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(updateWithFiles));
 router.patch("/:id", validate(idParamSchema, "params"), validate(casePayloadSchema), asyncHandler(update));
