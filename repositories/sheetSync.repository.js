@@ -165,6 +165,71 @@ export const getCaseStatusByName = async (statusName) => {
   return rows[0] || null;
 };
 
+export const getDefaultSheetCaseStatus = async () => {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, name
+      FROM case_statuses
+      ORDER BY
+        CASE WHEN name = 'New' THEN 0 ELSE 1 END,
+        sort_order ASC,
+        id ASC
+      LIMIT 1
+    `,
+  );
+
+  return rows[0] || null;
+};
+
+export const getSheetCaseCreatorUserId = async () => {
+  const [rows] = await pool.execute(
+    `
+      SELECT id
+      FROM users
+      WHERE role = 'admin'
+      ORDER BY id ASC
+      LIMIT 1
+    `,
+  );
+
+  return rows[0]?.id || null;
+};
+
+export const createCaseFromSheet = async ({ patientName, statusId, targetTime, startDate, dueDate, createdBy }) => {
+  const [result] = await pool.execute(
+    `
+      INSERT INTO cases (
+        name,
+        status_id,
+        target_time,
+        start_date,
+        estimated_completion_date,
+        progress_tracking,
+        created_by
+      )
+      VALUES (
+        :patientName,
+        :statusId,
+        :targetTime,
+        :startDate,
+        :dueDate,
+        1,
+        :createdBy
+      )
+    `,
+    {
+      patientName,
+      statusId,
+      targetTime: targetTime || null,
+      startDate: startDate || null,
+      dueDate: dueDate || null,
+      createdBy: createdBy || null,
+    },
+  );
+
+  return getSyncableCaseById(result.insertId);
+};
+
 export const updateCaseFromSheet = async ({ caseId, patientName, statusId }) => {
   const fields = [];
   const params = { caseId };

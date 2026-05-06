@@ -1,9 +1,12 @@
 import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import {
+  createCaseFromSheet,
   getCaseStatusByName,
+  getDefaultSheetCaseStatus,
   getSyncableCaseById,
   getSheetDashboardSummary,
+  getSheetCaseCreatorUserId,
   listDashboardOrdersForSheet,
   listDashboardPaymentsForSheet,
   listDashboardCasesForSheet,
@@ -56,6 +59,46 @@ export const syncToSheet = async (req, res) => {
 export const syncFromSheet = async (req, res) => {
   const payload = req.validatedBody || req.body;
   verifySheetsApiKey(payload.apiKey);
+
+  if (!payload.caseId) {
+    if (!payload.patientName) {
+      throw new ApiError(422, "patientName is required to create a case from Google Sheets");
+    }
+
+    let status = payload.status ? await getCaseStatusByName(payload.status) : null;
+    if (payload.status && !status) {
+      throw new ApiError(422, "Selected case status does not exist");
+    }
+
+    if (!status) {
+      status = await getDefaultSheetCaseStatus();
+    }
+    if (!status) {
+      throw new ApiError(500, "No case statuses configured");
+    }
+
+    const createdBy = await getSheetCaseCreatorUserId();
+    const createdCase = await createCaseFromSheet({
+      patientName: payload.patientName,
+      statusId: status.id,
+      targetTime: payload.targetTime,
+      startDate: payload.startDate,
+      dueDate: payload.dueDate,
+      createdBy,
+    });
+
+    sendSuccess(res, {
+      data: {
+        case: createdCase,
+        created: true,
+        rowNumber: payload.rowNumber || null,
+        sheetName: payload.sheetName || null,
+      },
+      message: "Case created from Google Sheets",
+      status: 201,
+    });
+    return;
+  }
 
   const existingCase = await getSyncableCaseById(payload.caseId);
   if (!existingCase) {
