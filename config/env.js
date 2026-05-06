@@ -162,6 +162,11 @@ export const env = {
 
   // Parsed list of allowed frontend origins for CORS
   frontendOrigins: parseFrontendOrigins(),
+
+  // Google Sheets two-way sync. Optional so local/dev environments can run
+  // without configuring the integration.
+  sheetsSyncApiKey: optional('SHEETS_SYNC_API_KEY', ''),
+  googleSheetWebhookUrl: optional('GOOGLE_SHEET_WEBHOOK_URL', ''),
 };
 
 /** Convenience boolean: true when running in production */

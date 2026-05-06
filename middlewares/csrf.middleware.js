@@ -7,6 +7,7 @@ export const CSRF_HEADER_NAME = "x-csrf-token";
 
 const TOKEN_BYTES = 32;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const SERVER_TO_SERVER_ROUTES = new Set(["/api/sync-from-sheet"]);
 
 const signToken = (token) =>
   crypto.createHmac("sha256", env.jwtSecret).update(token).digest("base64url");
@@ -47,6 +48,7 @@ export const issueCsrfToken = (_req, res) => {
 
 export const csrfProtection = (req, _res, next) => {
   if (SAFE_METHODS.has(req.method)) return next();
+  if (SERVER_TO_SERVER_ROUTES.has(req.path)) return next();
 
   const headerToken = req.get(CSRF_HEADER_NAME);
   if (verifyCookieValue(req.cookies?.[CSRF_COOKIE_NAME], headerToken)) {
