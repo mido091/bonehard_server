@@ -3,6 +3,9 @@ import { env } from "../config/env.js";
 import {
   getCaseStatusByName,
   getSyncableCaseById,
+  getSheetDashboardSummary,
+  listDashboardOrdersForSheet,
+  listDashboardPaymentsForSheet,
   listDashboardCasesForSheet,
   updateCaseFromSheet,
 } from "../repositories/sheetSync.repository.js";
@@ -28,15 +31,25 @@ export const syncToSheet = async (req, res) => {
   const query = req.validatedQuery || req.query;
   verifySheetsApiKey(query.apiKey);
 
-  const rows = await listDashboardCasesForSheet();
+  const [dashboard, cases, orders, payments] = await Promise.all([
+    getSheetDashboardSummary(),
+    listDashboardCasesForSheet(),
+    listDashboardOrdersForSheet(),
+    listDashboardPaymentsForSheet(),
+  ]);
 
   sendSuccess(res, {
     data: {
-      rows,
-      count: rows.length,
+      dashboard,
+      cases,
+      orders,
+      payments,
+      // Backward-compatible alias for older Apps Script copies.
+      rows: cases,
+      count: cases.length,
       generatedAt: new Date().toISOString(),
     },
-    message: "Dashboard cases ready for Google Sheets",
+    message: "Dashboard data ready for Google Sheets",
   });
 };
 
