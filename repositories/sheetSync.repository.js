@@ -8,6 +8,49 @@ const userOrderCondition = `
 
 const caseCondition = `NOT (${userOrderCondition})`;
 
+const sheetUserLabelSql = `
+  CASE
+    WHEN email IS NOT NULL AND email <> '' THEN CONCAT(name, ' <', email, '>')
+    ELSE name
+  END
+`;
+
+export const listSheetSyncOptions = async () => {
+  const [[statuses], [clients], [leaders]] = await Promise.all([
+    pool.execute(
+      `
+        SELECT name
+        FROM case_statuses
+        ORDER BY sort_order ASC, id ASC
+      `,
+    ),
+    pool.execute(
+      `
+        SELECT id, ${sheetUserLabelSql} AS label
+        FROM users
+        WHERE role = 'user'
+          AND is_active = 1
+        ORDER BY name ASC, id ASC
+      `,
+    ),
+    pool.execute(
+      `
+        SELECT id, ${sheetUserLabelSql} AS label
+        FROM users
+        WHERE role IN ('admin', 'assistant')
+          AND is_active = 1
+        ORDER BY role ASC, name ASC, id ASC
+      `,
+    ),
+  ]);
+
+  return {
+    statuses: statuses.map((row) => row.name).filter(Boolean),
+    clients: clients.map((row) => row.label).filter(Boolean),
+    leaders: leaders.map((row) => row.label).filter(Boolean),
+  };
+};
+
 export const getSheetDashboardSummary = async () => {
   const [[summaryRows], [paymentRows]] = await Promise.all([
     pool.execute(
@@ -50,8 +93,14 @@ export const listDashboardCasesForSheet = async () => {
         c.id AS caseId,
         c.name AS patientName,
         COALESCE(s.name, '') AS status,
-        target.name AS clientName,
-        leader.name AS projectLeader,
+        CASE
+          WHEN target.email IS NOT NULL AND target.email <> '' THEN CONCAT(target.name, ' <', target.email, '>')
+          ELSE target.name
+        END AS clientName,
+        CASE
+          WHEN leader.email IS NOT NULL AND leader.email <> '' THEN CONCAT(leader.name, ' <', leader.email, '>')
+          ELSE leader.name
+        END AS projectLeader,
         c.target_time AS targetTime,
         DATE_FORMAT(c.start_date, '%Y-%m-%d') AS startDate,
         DATE_FORMAT(c.estimated_completion_date, '%Y-%m-%d') AS dueDate,
@@ -165,6 +214,42 @@ export const getCaseStatusByName = async (statusName) => {
   return rows[0] || null;
 };
 
+const getEmailFromSheetUserLabel = (label = "") => {
+  const match = String(label).match(/<([^<>]+)>/);
+  return match ? match[1].trim() : "";
+};
+
+export const getSheetUserIdByLabel = async (label, allowedRoles) => {
+  const normalizedLabel = String(label || "").trim();
+  if (!normalizedLabel) return null;
+
+  const email = getEmailFromSheetUserLabel(normalizedLabel);
+  const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+  const roleParams = Object.fromEntries(roles.map((role, index) => [`role_${index}`, role]));
+  const roleSql = roles.map((_, index) => `:role_${index}`).join(", ");
+
+  const [rows] = await pool.execute(
+    `
+      SELECT id
+      FROM users
+      WHERE role IN (${roleSql})
+        AND is_active = 1
+        AND (
+          (:email <> '' AND email = :email)
+          OR ${sheetUserLabelSql} = :label
+          OR name = :label
+        )
+      ORDER BY
+        CASE WHEN :email <> '' AND email = :email THEN 0 ELSE 1 END,
+        id ASC
+      LIMIT 1
+    `,
+    { ...roleParams, email, label: normalizedLabel },
+  );
+
+  return rows[0]?.id || null;
+};
+
 export const getDefaultSheetCaseStatus = async () => {
   const [rows] = await pool.execute(
     `
@@ -195,12 +280,23 @@ export const getSheetCaseCreatorUserId = async () => {
   return rows[0]?.id || null;
 };
 
-export const createCaseFromSheet = async ({ patientName, statusId, targetTime, startDate, dueDate, createdBy }) => {
+export const createCaseFromSheet = async ({
+  patientName,
+  statusId,
+  clientId,
+  projectLeaderId,
+  targetTime,
+  startDate,
+  dueDate,
+  createdBy,
+}) => {
   const [result] = await pool.execute(
     `
       INSERT INTO cases (
         name,
         status_id,
+        target_id,
+        project_leader_id,
         target_time,
         start_date,
         estimated_completion_date,
@@ -210,6 +306,8 @@ export const createCaseFromSheet = async ({ patientName, statusId, targetTime, s
       VALUES (
         :patientName,
         :statusId,
+        :clientId,
+        :projectLeaderId,
         :targetTime,
         :startDate,
         :dueDate,
@@ -220,6 +318,8 @@ export const createCaseFromSheet = async ({ patientName, statusId, targetTime, s
     {
       patientName,
       statusId,
+      clientId: clientId || null,
+      projectLeaderId: projectLeaderId || null,
       targetTime: targetTime || null,
       startDate: startDate || null,
       dueDate: dueDate || null,
@@ -230,7 +330,7 @@ export const createCaseFromSheet = async ({ patientName, statusId, targetTime, s
   return getSyncableCaseById(result.insertId);
 };
 
-export const updateCaseFromSheet = async ({ caseId, patientName, statusId }) => {
+export const updateCaseFromSheet = async ({ caseId, patientName, statusId, clientId, projectLeaderId }) => {
   const fields = [];
   const params = { caseId };
 
@@ -242,6 +342,16 @@ export const updateCaseFromSheet = async ({ caseId, patientName, statusId }) => 
   if (statusId !== undefined) {
     fields.push("status_id = :statusId");
     params.statusId = statusId;
+  }
+
+  if (clientId !== undefined) {
+    fields.push("target_id = :clientId");
+    params.clientId = clientId || null;
+  }
+
+  if (projectLeaderId !== undefined) {
+    fields.push("project_leader_id = :projectLeaderId");
+    params.projectLeaderId = projectLeaderId || null;
   }
 
   if (!fields.length) {

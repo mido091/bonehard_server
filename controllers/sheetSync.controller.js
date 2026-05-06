@@ -4,12 +4,14 @@ import {
   createCaseFromSheet,
   getCaseStatusByName,
   getDefaultSheetCaseStatus,
+  getSheetUserIdByLabel,
   getSyncableCaseById,
   getSheetDashboardSummary,
   getSheetCaseCreatorUserId,
   listDashboardOrdersForSheet,
   listDashboardPaymentsForSheet,
   listDashboardCasesForSheet,
+  listSheetSyncOptions,
   updateCaseFromSheet,
 } from "../repositories/sheetSync.repository.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
@@ -34,11 +36,12 @@ export const syncToSheet = async (req, res) => {
   const query = req.validatedQuery || req.query;
   verifySheetsApiKey(query.apiKey);
 
-  const [dashboard, cases, orders, payments] = await Promise.all([
+  const [dashboard, cases, orders, payments, options] = await Promise.all([
     getSheetDashboardSummary(),
     listDashboardCasesForSheet(),
     listDashboardOrdersForSheet(),
     listDashboardPaymentsForSheet(),
+    listSheetSyncOptions(),
   ]);
 
   sendSuccess(res, {
@@ -47,6 +50,7 @@ export const syncToSheet = async (req, res) => {
       cases,
       orders,
       payments,
+      options,
       // Backward-compatible alias for older Apps Script copies.
       rows: cases,
       count: cases.length,
@@ -77,10 +81,25 @@ export const syncFromSheet = async (req, res) => {
       throw new ApiError(500, "No case statuses configured");
     }
 
+    const clientId = payload.clientName ? await getSheetUserIdByLabel(payload.clientName, "user") : null;
+    const projectLeaderId = payload.projectLeader
+      ? await getSheetUserIdByLabel(payload.projectLeader, ["admin", "assistant"])
+      : null;
+
+    if (payload.clientName && !clientId) {
+      throw new ApiError(422, "Selected client does not exist");
+    }
+
+    if (payload.projectLeader && !projectLeaderId) {
+      throw new ApiError(422, "Selected project leader does not exist");
+    }
+
     const createdBy = await getSheetCaseCreatorUserId();
     const createdCase = await createCaseFromSheet({
       patientName: payload.patientName,
       statusId: status.id,
+      clientId,
+      projectLeaderId,
       targetTime: payload.targetTime,
       startDate: payload.startDate,
       dueDate: payload.dueDate,
@@ -114,10 +133,30 @@ export const syncFromSheet = async (req, res) => {
     statusId = status.id;
   }
 
+  let clientId;
+  if (payload.clientName !== undefined) {
+    clientId = payload.clientName ? await getSheetUserIdByLabel(payload.clientName, "user") : null;
+    if (payload.clientName && !clientId) {
+      throw new ApiError(422, "Selected client does not exist");
+    }
+  }
+
+  let projectLeaderId;
+  if (payload.projectLeader !== undefined) {
+    projectLeaderId = payload.projectLeader
+      ? await getSheetUserIdByLabel(payload.projectLeader, ["admin", "assistant"])
+      : null;
+    if (payload.projectLeader && !projectLeaderId) {
+      throw new ApiError(422, "Selected project leader does not exist");
+    }
+  }
+
   const updatedCase = await updateCaseFromSheet({
     caseId: payload.caseId,
     patientName: payload.patientName,
     statusId,
+    clientId,
+    projectLeaderId,
   });
 
   sendSuccess(res, {

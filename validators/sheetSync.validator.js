@@ -14,6 +14,8 @@ export const sheetSyncPayloadSchema = z.object({
   caseId: optionalSheetId,
   patientName: z.string().trim().min(1).max(190).optional(),
   status: z.string().trim().min(1).max(80).optional(),
+  clientName: z.string().trim().max(220).optional(),
+  projectLeader: z.string().trim().max(220).optional(),
   targetTime: z.string().trim().max(120).optional(),
   startDate: z.string().trim().max(30).optional(),
   dueDate: z.string().trim().max(30).optional(),
