@@ -101,6 +101,8 @@ export const syncFromSheet = async (req, res) => {
       clientId,
       projectLeaderId,
       targetTime: payload.targetTime,
+      staffNotes: payload.staffNotes,
+      clientNotes: payload.clientNotes,
       startDate: payload.startDate,
       dueDate: payload.dueDate,
       createdBy,
@@ -157,6 +159,11 @@ export const syncFromSheet = async (req, res) => {
     statusId,
     clientId,
     projectLeaderId,
+    targetTime: payload.targetTime,
+    staffNotes: payload.staffNotes,
+    clientNotes: payload.clientNotes,
+    startDate: payload.startDate,
+    dueDate: payload.dueDate,
   });
 
   sendSuccess(res, {

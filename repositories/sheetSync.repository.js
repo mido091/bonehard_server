@@ -16,14 +16,7 @@ const sheetUserLabelSql = `
 `;
 
 export const listSheetSyncOptions = async () => {
-  const [[statuses], [clients], [leaders]] = await Promise.all([
-    pool.execute(
-      `
-        SELECT name
-        FROM case_statuses
-        ORDER BY sort_order ASC, id ASC
-      `,
-    ),
+  const [[clients], [leaders]] = await Promise.all([
     pool.execute(
       `
         SELECT id, ${sheetUserLabelSql} AS label
@@ -45,11 +38,31 @@ export const listSheetSyncOptions = async () => {
   ]);
 
   return {
-    statuses: statuses.map((row) => row.name).filter(Boolean),
+    statuses: ["New", "In Progress", "Completed"],
+    targetTimes: ["Same day", "24 hours", "48 hours", "72 hours", "1 week"],
     clients: clients.map((row) => row.label).filter(Boolean),
     leaders: leaders.map((row) => row.label).filter(Boolean),
   };
 };
+
+const caseStatusDisplaySql = `
+  CASE
+    WHEN s.name = 'Completed' OR s.name IN ('Delivered', 'Closed') OR s.sort_order = 30 THEN 'Completed'
+    WHEN s.name = 'In Progress' OR s.name IN (
+      'CASE ON HOLD (DR''S REQUEST)',
+      'Case Approved / QC & Paperwork',
+      'Need New CBCT Scan',
+      'Planning',
+      'Planning Completed (Need Scheduling)',
+      'Pending Doctor Approval',
+      'Surgical Guide Design',
+      'Guide Printing',
+      'Finishing / Preparing for Shipping',
+      'QC'
+    ) OR s.sort_order = 20 THEN 'In Progress'
+    ELSE 'New'
+  END
+`;
 
 export const getSheetDashboardSummary = async () => {
   const [[summaryRows], [paymentRows]] = await Promise.all([
@@ -92,7 +105,7 @@ export const listDashboardCasesForSheet = async () => {
       SELECT
         c.id AS caseId,
         c.name AS patientName,
-        COALESCE(s.name, '') AS status,
+        ${caseStatusDisplaySql} AS status,
         CASE
           WHEN target.email IS NOT NULL AND target.email <> '' THEN CONCAT(target.name, ' <', target.email, '>')
           ELSE target.name
@@ -102,6 +115,8 @@ export const listDashboardCasesForSheet = async () => {
           ELSE leader.name
         END AS projectLeader,
         c.target_time AS targetTime,
+        c.description AS staffNotes,
+        c.client_description AS clientNotes,
         DATE_FORMAT(c.start_date, '%Y-%m-%d') AS startDate,
         DATE_FORMAT(c.estimated_completion_date, '%Y-%m-%d') AS dueDate,
         c.progress_percentage AS progress,
@@ -206,6 +221,7 @@ export const getCaseStatusByName = async (statusName) => {
       SELECT id, name
       FROM case_statuses
       WHERE LOWER(name) = LOWER(:statusName)
+        AND name IN ('New', 'In Progress', 'Completed')
       LIMIT 1
     `,
     { statusName },
@@ -255,10 +271,8 @@ export const getDefaultSheetCaseStatus = async () => {
     `
       SELECT id, name
       FROM case_statuses
-      ORDER BY
-        CASE WHEN name = 'New' THEN 0 ELSE 1 END,
-        sort_order ASC,
-        id ASC
+      WHERE name IN ('New', 'In Progress', 'Completed')
+      ORDER BY CASE WHEN name = 'New' THEN 0 WHEN name = 'In Progress' THEN 1 ELSE 2 END
       LIMIT 1
     `,
   );
@@ -286,6 +300,8 @@ export const createCaseFromSheet = async ({
   clientId,
   projectLeaderId,
   targetTime,
+  staffNotes,
+  clientNotes,
   startDate,
   dueDate,
   createdBy,
@@ -298,6 +314,8 @@ export const createCaseFromSheet = async ({
         target_id,
         project_leader_id,
         target_time,
+        description,
+        client_description,
         start_date,
         estimated_completion_date,
         progress_tracking,
@@ -309,6 +327,8 @@ export const createCaseFromSheet = async ({
         :clientId,
         :projectLeaderId,
         :targetTime,
+        :staffNotes,
+        :clientNotes,
         :startDate,
         :dueDate,
         1,
@@ -321,6 +341,8 @@ export const createCaseFromSheet = async ({
       clientId: clientId || null,
       projectLeaderId: projectLeaderId || null,
       targetTime: targetTime || null,
+      staffNotes: staffNotes || null,
+      clientNotes: clientNotes || null,
       startDate: startDate || null,
       dueDate: dueDate || null,
       createdBy: createdBy || null,
@@ -330,7 +352,18 @@ export const createCaseFromSheet = async ({
   return getSyncableCaseById(result.insertId);
 };
 
-export const updateCaseFromSheet = async ({ caseId, patientName, statusId, clientId, projectLeaderId }) => {
+export const updateCaseFromSheet = async ({
+  caseId,
+  patientName,
+  statusId,
+  clientId,
+  projectLeaderId,
+  targetTime,
+  staffNotes,
+  clientNotes,
+  startDate,
+  dueDate,
+}) => {
   const fields = [];
   const params = { caseId };
 
@@ -352,6 +385,31 @@ export const updateCaseFromSheet = async ({ caseId, patientName, statusId, clien
   if (projectLeaderId !== undefined) {
     fields.push("project_leader_id = :projectLeaderId");
     params.projectLeaderId = projectLeaderId || null;
+  }
+
+  if (targetTime !== undefined) {
+    fields.push("target_time = :targetTime");
+    params.targetTime = targetTime || null;
+  }
+
+  if (staffNotes !== undefined) {
+    fields.push("description = :staffNotes");
+    params.staffNotes = staffNotes || null;
+  }
+
+  if (clientNotes !== undefined) {
+    fields.push("client_description = :clientNotes");
+    params.clientNotes = clientNotes || null;
+  }
+
+  if (startDate !== undefined) {
+    fields.push("start_date = :startDate");
+    params.startDate = startDate || null;
+  }
+
+  if (dueDate !== undefined) {
+    fields.push("estimated_completion_date = :dueDate");
+    params.dueDate = dueDate || null;
   }
 
   if (!fields.length) {
