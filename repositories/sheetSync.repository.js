@@ -205,14 +205,32 @@ export const getSyncableCaseById = async (caseId) => {
         s.name AS statusName
       FROM cases c
       LEFT JOIN case_statuses s ON s.id = c.status_id
+      LEFT JOIN users creator ON creator.id = c.created_by
       WHERE c.id = :caseId
         AND c.is_archived = 0
+        AND ${caseCondition}
       LIMIT 1
     `,
     { caseId },
   );
 
   return rows[0] || null;
+};
+
+export const deleteCaseFromSheet = async (caseId) => {
+  const [result] = await pool.execute(
+    `
+      DELETE c
+      FROM cases c
+      LEFT JOIN users creator ON creator.id = c.created_by
+      WHERE c.id = :caseId
+        AND c.is_archived = 0
+        AND ${caseCondition}
+    `,
+    { caseId },
+  );
+
+  return result.affectedRows > 0;
 };
 
 export const getCaseStatusByName = async (statusName) => {

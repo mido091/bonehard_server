@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import {
   createCaseFromSheet,
+  deleteCaseFromSheet,
   getCaseStatusByName,
   getDefaultSheetCaseStatus,
   getSheetUserIdByLabel,
@@ -14,6 +15,7 @@ import {
   listSheetSyncOptions,
   updateCaseFromSheet,
 } from "../repositories/sheetSync.repository.js";
+import { deleteCaseFolder } from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 
 const timingSafeStringEqual = (left, right) => {
@@ -63,6 +65,35 @@ export const syncToSheet = async (req, res) => {
 export const syncFromSheet = async (req, res) => {
   const payload = req.validatedBody || req.body;
   verifySheetsApiKey(payload.apiKey);
+
+  if (payload.action === "delete") {
+    if (!payload.caseId) {
+      throw new ApiError(422, "caseId is required to delete a case from Google Sheets");
+    }
+
+    const existingCase = await getSyncableCaseById(payload.caseId);
+    if (!existingCase) {
+      throw new ApiError(404, "Case not found");
+    }
+
+    const deleted = await deleteCaseFromSheet(payload.caseId);
+    if (!deleted) {
+      throw new ApiError(404, "Case not found");
+    }
+
+    await deleteCaseFolder(payload.caseId);
+
+    sendSuccess(res, {
+      data: {
+        deleted: true,
+        caseId: payload.caseId,
+        rowNumber: payload.rowNumber || null,
+        sheetName: payload.sheetName || null,
+      },
+      message: "Case deleted from Google Sheets",
+    });
+    return;
+  }
 
   if (!payload.caseId) {
     if (!payload.patientName) {

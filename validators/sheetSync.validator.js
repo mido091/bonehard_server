@@ -12,6 +12,7 @@ export const sheetExportQuerySchema = z.object({
 export const sheetSyncPayloadSchema = z.object({
   apiKey: z.string().trim().min(1),
   caseId: optionalSheetId,
+  action: z.enum(["none", "delete"]).optional().default("none"),
   patientName: z.string().trim().min(1).max(190).optional(),
   status: z.string().trim().min(1).max(80).optional(),
   clientName: z.string().trim().max(220).optional(),
