@@ -12,17 +12,24 @@ import {
   applyTemplateToCase,
   createCaseFile,
   createCaseGeneralNote,
+  deleteCaseFile,
+  deleteCaseGeneralNote,
   getCaseFileById,
+  getCaseGeneralNoteById,
   getCaseTeamMemberIds,
   getCustomFieldValues,
   listCaseGeneralNotes,
   listCaseFiles,
   replaceCaseTeamMembers,
+  updateCaseFileName,
+  updateCaseGeneralNote,
   upsertCustomFieldValues,
 } from "../repositories/caseExtra.repository.js";
 import { getOfficialStatusByName, statusExists } from "../repositories/status.repository.js";
+import { DEFAULT_CASE_STATUS_NAME } from "../constants/workflowOptions.js";
 import { createTask, deleteTask, listTasksByCase, listTasksGlobal, replaceTaskWatchers, updateTask } from "../repositories/task.repository.js";
 import { uploadFileToSupabase, deleteSupabaseFile, deleteCaseFolder, moveSupabaseFileToCase } from "./supabase.service.js";
+import { notifyUser } from "./notification.service.js";
 
 import { ApiError } from "../utils/apiResponse.js";
 import { withTransaction } from "../utils/db.js";
@@ -85,17 +92,38 @@ const ensureUserOrderExists = async (id, userId) => {
 export const getUserOrderDetails = async (id, userId) => {
   const item = await ensureUserOrderExists(id, userId);
   item.customFieldValues = await getCustomFieldValues(id);
-  const filesResult = await listCaseFiles(id, { page: 1, perPage: 100 });
+  // Users only see public files (folder_type = 'public')
+  const filesResult = await listCaseFiles(id, { page: 1, perPage: 100, folderType: 'public' });
   item.files = filesResult.rows;
+
+  // Include public team notes
+  const notesResult = await listCaseGeneralNotes(id, { page: 1, perPage: 50 }, { publicOnly: true });
+  item.notes = notesResult.rows;
+
   return item;
 };
 
 export const getAdminUserOrderDetails = async (id) => {
   const item = await ensureAdminUserOrderExists(id);
   item.customFieldValues = await getCustomFieldValues(id);
+  // Admins see ALL files (no folder_type filter)
   const filesResult = await listCaseFiles(id, { page: 1, perPage: 100 });
   item.files = filesResult.rows;
   return item;
+};
+
+export const getAdminUserOrderFile = async (id, fileId) => {
+  await ensureAdminUserOrderExists(id);
+  const file = await getCaseFileById(id, fileId);
+  if (!file) throw new ApiError(404, "File not found");
+  return file;
+};
+
+export const renameAdminUserOrderFile = async (id, fileId, fileName) => {
+  await ensureAdminUserOrderExists(id);
+  const file = await updateCaseFileName(id, fileId, fileName);
+  if (!file) throw new ApiError(404, "File not found");
+  return getAdminUserOrderDetails(id);
 };
 
 export const setAdminUserOrderStatus = async (id, { statusId, statusName }) => {
@@ -118,13 +146,107 @@ export const deleteAdminUserOrder = async (id) => {
 
 export const getAdminUserOrderNotes = async (id, query) => {
   await ensureAdminUserOrderExists(id);
+  // Admins see all notes (public + private)
   return listCaseGeneralNotes(id, query);
 };
 
+/** Fetch notes visible to a user (public only). */
+export const getUserOrderPublicNotes = async (id, userId, query) => {
+  await ensureUserOrderExists(id, userId);
+  return listCaseGeneralNotes(id, query, { publicOnly: true });
+};
+
 export const createAdminUserOrderNote = async (id, payload, userId) => {
-  await ensureAdminUserOrderExists(id);
-  await createCaseGeneralNote(id, payload, userId);
+  const order = await ensureAdminUserOrderExists(id);
+  const note = await createCaseGeneralNote(id, payload, userId);
+
+  // If the note is public, notify the customer
+  if (!payload.isPrivate && order.targetId) {
+    await notifyUser({
+      userId: order.targetId,
+      type: 'order',
+      title: 'New Team Note',
+      body: `An update has been added to your order "${order.name}".`,
+      data: { orderId: id, noteId: note.id }
+    });
+  }
+
   return getAdminUserOrderNotes(id, { page: 1, perPage: 50 });
+};
+
+/** Update an existing team note (admin/assistant only). */
+export const updateAdminUserOrderNote = async (orderId, noteId, payload, userId) => {
+  await ensureAdminUserOrderExists(orderId);
+  const note = await getCaseGeneralNoteById(orderId, noteId);
+  if (!note) throw new ApiError(404, 'Note not found');
+  await updateCaseGeneralNote(orderId, noteId, payload, userId);
+  return getAdminUserOrderNotes(orderId, { page: 1, perPage: 50 });
+};
+
+/** Delete a team note (admin/assistant only). */
+export const deleteAdminUserOrderNote = async (orderId, noteId) => {
+  await ensureAdminUserOrderExists(orderId);
+  const note = await getCaseGeneralNoteById(orderId, noteId);
+  if (!note) throw new ApiError(404, 'Note not found');
+  await deleteCaseGeneralNote(orderId, noteId);
+};
+
+/**
+ * Upload files to a user order as admin/assistant.
+ * @param {string} folderType - 'public' (visible to user) or 'private' (admin-only)
+ */
+export const uploadAdminFilesToOrder = async (orderId, files, userId, folderType = 'private') => {
+  const order = await ensureAdminUserOrderExists(orderId);
+  if (!files.length) return getAdminUserOrderDetails(orderId);
+
+  const uploadedFiles = await uploadFilesForCase(orderId, files);
+
+  try {
+    await Promise.all(
+      uploadedFiles.map((uploaded, i) =>
+        createCaseFile(
+          orderId,
+          {
+            ...toCaseFilePayload(files[i], uploaded),
+            folderType, // override with admin-chosen visibility
+          },
+          userId,
+        )
+      )
+    );
+
+    // Notify user if files are public
+    if (folderType === 'public' && order.targetId) {
+      await notifyUser({
+        userId: order.targetId,
+        type: 'order',
+        title: 'New Files Uploaded',
+        body: `${files.length} new file${files.length === 1 ? '' : 's'} have been added to your order "${order.name}".`,
+        data: { orderId: orderId }
+      });
+    }
+  } catch (error) {
+    // Roll back uploaded files on DB failure
+    await Promise.allSettled(uploadedFiles.map(u => deleteSupabaseFile(u.supabasePath)));
+    throw error;
+  }
+
+  return getAdminUserOrderDetails(orderId);
+};
+
+/** Delete a file from an order (admin/assistant, no ownership restriction). */
+export const deleteAdminOrderFile = async (orderId, fileId) => {
+  await ensureAdminUserOrderExists(orderId);
+  const file = await getCaseFileById(orderId, fileId);
+  if (!file) throw new ApiError(404, 'File not found');
+
+  await deleteCaseFile(orderId, fileId);
+
+  if (file.storageProvider === 'supabase' && file.cloudinaryPublicId) {
+    await deleteSupabaseFile(file.cloudinaryPublicId);
+  }
+
+  return getAdminUserOrderDetails(orderId);
 };
 
 export const getUserOrderFile = async (id, fileId, userId) => {
@@ -132,6 +254,31 @@ export const getUserOrderFile = async (id, fileId, userId) => {
   const file = await getCaseFileById(id, fileId);
   if (!file) throw new ApiError(404, "File not found");
   return file;
+};
+
+export const renameUserOrderFile = async (id, fileId, userId, fileName) => {
+  await ensureUserOrderExists(id, userId);
+  const file = await updateCaseFileName(id, fileId, fileName);
+  if (!file) throw new ApiError(404, "File not found");
+  return getUserOrderDetails(id, userId);
+};
+
+/**
+ * Delete a file attached to a user order.
+ * Verifies order ownership before deleting from DB and storage.
+ */
+export const deleteUserOrderFile = async (id, fileId, userId) => {
+  await ensureUserOrderExists(id, userId);
+  const file = await getCaseFileById(id, fileId);
+  if (!file) throw new ApiError(404, "File not found");
+
+  await deleteCaseFile(id, fileId);
+
+  if (file.storageProvider === "supabase" && file.cloudinaryPublicId) {
+    await deleteSupabaseFile(file.cloudinaryPublicId);
+  }
+
+  return getUserOrderDetails(id, userId);
 };
 
 /**
@@ -265,7 +412,7 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
 };
 
 export const createUserOrderRecordWithFiles = async (payload, userId, files = []) => {
-  const defaultStatus = await getOfficialStatusByName("New");
+  const defaultStatus = await getOfficialStatusByName(DEFAULT_CASE_STATUS_NAME);
   if (!defaultStatus) throw new ApiError(422, "Default order status is not configured");
 
   const orderPayload = {
@@ -281,6 +428,10 @@ export const createUserOrderRecordWithFiles = async (payload, userId, files = []
     targetTime: payload.targetTime || null,
     contactPhone: payload.contactPhone,
     contactEmail: payload.contactEmail,
+    implantSystem: payload.implantSystem || null,
+    implantSystemOther: payload.implantSystem === "Other" ? payload.implantSystemOther || null : null,
+    servicesNeeded: payload.servicesNeeded || [],
+    servicesNeededOther: (payload.servicesNeeded || []).includes("Other") ? payload.servicesNeededOther || null : null,
     customUid: null,
     progressTracking: true,
     price: null,
@@ -291,6 +442,63 @@ export const createUserOrderRecordWithFiles = async (payload, userId, files = []
   };
 
   return createCaseRecordWithFiles(orderPayload, userId, files, { allowUserOrder: true });
+};
+
+export const updateUserOrderRecordWithFiles = async (id, payload, userId, files = []) => {
+  // Fetch existing case to preserve all non-editable fields and avoid undefined bind params
+  const existing = await ensureUserOrderExists(id, userId);
+
+  // Only the fields the user is allowed to edit are merged on top of the full existing record
+  const orderPayload = {
+    // Preserved fields (user cannot change these)
+    statusId:                 existing.statusId,
+    targetId:                 existing.targetId,
+    secondaryClientId:        existing.secondaryClientId ?? null,
+    projectLeaderId:          existing.projectLeaderId ?? null,
+    startDate:                existing.startDate ?? null,
+    estimatedCompletionDate:  existing.estimatedCompletionDate ?? null,
+    customUid:                existing.customUid ?? null,
+    progressTracking:         existing.progressTracking,
+    price:                    existing.price ?? null,
+    color:                    existing.color ?? null,
+    templateId:               existing.templateId ?? null,
+    description:              existing.description ?? null,
+    // User-editable fields
+    name:                     payload.name,
+    clientDescription:        payload.clientDescription || null,
+    targetTime:               payload.targetTime || null,
+    contactPhone:             payload.contactPhone,
+    contactEmail:             payload.contactEmail,
+    implantSystem:            payload.implantSystem || null,
+    implantSystemOther:       payload.implantSystem === "Other" ? payload.implantSystemOther || null : null,
+    servicesNeeded:           payload.servicesNeeded || [],
+    servicesNeededOther:      (payload.servicesNeeded || []).includes("Other") ? payload.servicesNeededOther || null : null,
+  };
+
+  // 1. Upload new files to Supabase before touching the DB
+  const uploadedFiles = await uploadFilesForCase(id, files);
+
+  try {
+    await withTransaction(async (connection) => {
+      await updateCase(id, orderPayload, connection);
+
+      if (payload.customFieldValues && Object.keys(payload.customFieldValues).length) {
+        await upsertCustomFieldValues(id, payload.customFieldValues, connection);
+      }
+
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i]), userId, connection);
+      }
+    });
+
+    return getUserOrderDetails(id, userId);
+  } catch (error) {
+    // DB transaction failed — clean up orphaned Supabase files
+    await Promise.allSettled(
+      uploadedFiles.map((u) => deleteSupabaseFile(u.supabasePath))
+    );
+    throw error;
+  }
 };
 
 /**

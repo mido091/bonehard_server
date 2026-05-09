@@ -5,8 +5,12 @@ import {
   changeRole,
   createAssistant,
   createUserRecord,
+  createUserOrderNote,
   dashboard,
+  deleteAdminOrderFileHandler,
   deleteUserRecord,
+  deleteUserOrderNote,
+  downloadUserOrderFile,
   exportDashboardCsv,
   exportUserOrderCsv,
   notifications,
@@ -14,10 +18,12 @@ import {
   stats,
   teamOptions,
   userOptions,
-  createUserOrderNote,
   exportUserOrderPackage,
   removeUserOrder,
+  renameUserOrderFile,
+  updateUserOrderNote,
   updateUserOrderStatus,
+  uploadAdminOrderFile,
   userOrderDetail,
   userOrderNotes,
   userOrders,
@@ -49,6 +55,7 @@ import {
 
 import { requireAdminOnly, requireAdminOrAssistant, requireAuth } from "../middlewares/auth.middleware.js";
 import { handleBrandAssetUpload, handleSocialIconUpload } from "../middlewares/siteAssetUpload.middleware.js";
+import { handleCaseFileUpload } from "../middlewares/caseFileUpload.middleware.js";
 import { uploadLimiter } from "../middlewares/rateLimit.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
 import { asyncHandler } from "../utils/apiResponse.js";
@@ -69,6 +76,7 @@ import {
 } from "../validators/chatPayment.validator.js";
 import { caseListQuerySchema, idParamSchema as caseIdParamSchema, statusPayloadSchema } from "../validators/case.validator.js";
 import { generalNotePayloadSchema, listQuerySchema as caseExtraListQuerySchema } from "../validators/caseExtra.validator.js";
+import { userOrderFileParamSchema, userOrderFileRenameSchema, userOrderNoteParamSchema } from "../validators/userOrder.validator.js";
 import {
   contactSubmissionListSchema,
   contactSubmissionUpdateSchema,
@@ -93,8 +101,14 @@ router.patch("/chat-payment-submissions/:id/reject", validate(chatPaymentParamSc
 router.get("/user-orders", validate(caseListQuerySchema, "query"), asyncHandler(userOrders));
 router.get("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"), validate(caseExtraListQuerySchema, "query"), asyncHandler(userOrderNotes));
 router.post("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(createUserOrderNote));
+router.patch("/user-orders/:id/team-notes/:noteId", validate(userOrderNoteParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(updateUserOrderNote));
+router.delete("/user-orders/:id/team-notes/:noteId", validate(userOrderNoteParamSchema, "params"), asyncHandler(deleteUserOrderNote));
+router.post("/user-orders/:id/files", validate(caseIdParamSchema, "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(uploadAdminOrderFile));
+router.delete("/user-orders/:id/files/:fileId", validate(userOrderFileParamSchema, "params"), asyncHandler(deleteAdminOrderFileHandler));
 router.get("/user-orders/:id/export-package", validate(caseIdParamSchema, "params"), asyncHandler(exportUserOrderPackage));
 router.get("/user-orders/:id/export-csv", validate(caseIdParamSchema, "params"), asyncHandler(exportUserOrderCsv));
+router.get("/user-orders/:id/files/:fileId/download", validate(userOrderFileParamSchema, "params"), asyncHandler(downloadUserOrderFile));
+router.patch("/user-orders/:id/files/:fileId", validate(userOrderFileParamSchema, "params"), validate(userOrderFileRenameSchema), asyncHandler(renameUserOrderFile));
 router.patch("/user-orders/:id/status", validate(caseIdParamSchema, "params"), validate(statusPayloadSchema), asyncHandler(updateUserOrderStatus));
 router.delete("/user-orders/:id", validate(caseIdParamSchema, "params"), asyncHandler(removeUserOrder));
 router.get("/user-orders/:id", validate(caseIdParamSchema, "params"), asyncHandler(userOrderDetail));

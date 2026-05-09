@@ -51,6 +51,7 @@ import {
   archiveOrder,
   upsertCaseSystemSettings,
   updateCasePhase,
+  updateCaseFileName,
 } from "../repositories/caseExtra.repository.js";
 
 import { getCaseDetails, getCases } from "../services/case.service.js";
@@ -231,6 +232,18 @@ export const removeFile = async (req, res) => {
   }
 
   sendSuccess(res, { message: "File deleted" });
+};
+
+export const renameFile = async (req, res) => {
+  const caseId = Number(req.params.id);
+  const fileId = Number(req.params.fileId);
+  await getCaseDetails(caseId);
+
+  const file = await updateCaseFileName(caseId, fileId, (req.validatedBody || req.body).fileName);
+  if (!file) throw new ApiError(404, "File not found");
+
+  const result = await listCaseFiles(caseId, { page: 1, perPage: 100 });
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "File renamed" });
 };
 
 export const orders = async (req, res) => {

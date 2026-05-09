@@ -1,4 +1,5 @@
 import { pool } from "../config/db.js";
+import { CASE_STATUS_NAMES } from "../constants/workflowOptions.js";
 
 const userOrderCondition = `
   c.target_id IS NOT NULL
@@ -38,31 +39,14 @@ export const listSheetSyncOptions = async () => {
   ]);
 
   return {
-    statuses: ["New", "In Progress", "Completed"],
+    statuses: CASE_STATUS_NAMES,
     targetTimes: ["Same day", "24 hours", "48 hours", "72 hours", "1 week"],
     clients: clients.map((row) => row.label).filter(Boolean),
     leaders: leaders.map((row) => row.label).filter(Boolean),
   };
 };
 
-const caseStatusDisplaySql = `
-  CASE
-    WHEN s.name = 'Completed' OR s.name IN ('Delivered', 'Closed') OR s.sort_order = 30 THEN 'Completed'
-    WHEN s.name = 'In Progress' OR s.name IN (
-      'CASE ON HOLD (DR''S REQUEST)',
-      'Case Approved / QC & Paperwork',
-      'Need New CBCT Scan',
-      'Planning',
-      'Planning Completed (Need Scheduling)',
-      'Pending Doctor Approval',
-      'Surgical Guide Design',
-      'Guide Printing',
-      'Finishing / Preparing for Shipping',
-      'QC'
-    ) OR s.sort_order = 20 THEN 'In Progress'
-    ELSE 'New'
-  END
-`;
+const caseStatusDisplaySql = "COALESCE(s.name, '')";
 
 export const getSheetDashboardSummary = async () => {
   const [[summaryRows], [paymentRows]] = await Promise.all([
@@ -70,8 +54,8 @@ export const getSheetDashboardSummary = async () => {
       `
         SELECT
           SUM(CASE WHEN ${caseCondition} THEN 1 ELSE 0 END) AS totalCases,
-          SUM(CASE WHEN ${caseCondition} AND s.name = 'New' THEN 1 ELSE 0 END) AS newCases,
-          SUM(CASE WHEN ${caseCondition} AND s.name = 'In Progress' THEN 1 ELSE 0 END) AS inProgressCases,
+          SUM(CASE WHEN ${caseCondition} AND s.name = 'Order Received' THEN 1 ELSE 0 END) AS newCases,
+          SUM(CASE WHEN ${caseCondition} AND s.name NOT IN ('Order Received', 'Completed', 'Order Canceled') THEN 1 ELSE 0 END) AS inProgressCases,
           SUM(CASE WHEN ${caseCondition} AND s.name = 'Completed' THEN 1 ELSE 0 END) AS completedCases,
           SUM(CASE WHEN ${userOrderCondition} THEN 1 ELSE 0 END) AS totalOrders,
           SUM(CASE WHEN ${userOrderCondition} AND DATE(c.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 13 DAY) THEN 1 ELSE 0 END) AS newOrders14d

@@ -4,7 +4,7 @@ import {
   listAdminAssistantNotificationRecipients,
 } from "../repositories/notification.repository.js";
 import { getUserOrderDashboardAnalytics } from "../repositories/userDashboard.repository.js";
-import { createUserOrderRecordWithFiles, getUserOrderDetails, getUserOrderFile, getUserOrders } from "../services/case.service.js";
+import { createUserOrderRecordWithFiles, deleteUserOrderFile, getUserOrderDetails, getUserOrderFile, getUserOrders, renameUserOrderFile, updateUserOrderRecordWithFiles } from "../services/case.service.js";
 import { triggerRealtimeEvent } from "../services/pusher.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 import { userOrderPayloadSchema } from "../validators/userOrder.validator.js";
@@ -112,4 +112,31 @@ export const createWithFiles = async (req, res) => {
   );
 
   sendSuccess(res, { data: item, message: "Order submitted", status: 201 });
+};
+
+export const updateWithFiles = async (req, res) => {
+  const payload = parseMultipartOrderPayload(req);
+  await validateCustomFieldValues(payload.customFieldValues);
+  
+  const item = await updateUserOrderRecordWithFiles(req.params.id, payload, req.user.id, req.files || []);
+
+  sendSuccess(res, { data: item, message: "Order updated successfully" });
+};
+
+/**
+ * DELETE /api/user/orders/:id/files/:fileId
+ * Deletes a single file from the user's order, verifying ownership first.
+ */
+export const deleteFile = async (req, res) => {
+  const item = await deleteUserOrderFile(req.params.id, req.params.fileId, req.user.id);
+  sendSuccess(res, { data: item, message: "File deleted" });
+};
+
+/**
+ * PATCH /api/user/orders/:id/files/:fileId
+ * Lets the order owner rename an uploaded file without changing the stored object.
+ */
+export const renameFile = async (req, res) => {
+  const item = await renameUserOrderFile(req.params.id, req.params.fileId, req.user.id, (req.validatedBody || req.body).fileName);
+  sendSuccess(res, { data: item, message: "File renamed" });
 };

@@ -2,11 +2,17 @@ import { pool } from "../config/db.js";
 import { getAdminStats } from "../services/admin.service.js";
 import {
   createAdminUserOrderNote,
+  deleteAdminOrderFile,
   deleteAdminUserOrder,
+  deleteAdminUserOrderNote,
+  getAdminUserOrderFile,
   getAdminUserOrderDetails,
   getAdminUserOrderNotes,
   getAdminUserOrders,
+  renameAdminUserOrderFile,
   setAdminUserOrderStatus,
+  updateAdminUserOrderNote,
+  uploadAdminFilesToOrder,
 } from "../services/case.service.js";
 import { exportAdminUserOrderPackage } from "../services/exportPackage.service.js";
 import { exportAdminUserOrderCsvPackage, exportDashboardCsvPackage } from "../services/csvExport.service.js";
@@ -26,6 +32,11 @@ import { getAssignableUsers } from "../repositories/user.repository.js";
 import { createUser } from "../repositories/user.repository.js";
 import { hashPassword } from "../utils/password.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
+
+const withDownloadFileName = (url, fileName) => {
+  const cleanUrl = url.replace(/([?&])download=[^&]*/i, "$1").replace(/[?&]$/, "");
+  return `${cleanUrl}${cleanUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(fileName)}`;
+};
 
 export const stats = async (req, res) => {
   const data = await getAdminStats();
@@ -87,6 +98,23 @@ export const exportUserOrderCsv = async (req, res) => {
   await exportAdminUserOrderCsvPackage(req.params.id, res);
 };
 
+export const downloadUserOrderFile = async (req, res) => {
+  const file = await getAdminUserOrderFile(req.params.id, req.params.fileId);
+  let url = file.fileUrl || file.cloudinarySecureUrl;
+  if (!url) throw new ApiError(404, "File not found");
+
+  if (file.storageProvider === "supabase") {
+    url = withDownloadFileName(url, file.fileName);
+  }
+
+  return res.redirect(url);
+};
+
+export const renameUserOrderFile = async (req, res) => {
+  const item = await renameAdminUserOrderFile(req.params.id, req.params.fileId, (req.validatedBody || req.body).fileName);
+  sendSuccess(res, { data: item, message: "File renamed" });
+};
+
 export const updateUserOrderStatus = async (req, res) => {
   const item = await setAdminUserOrderStatus(req.params.id, req.validatedBody || req.body);
   sendSuccess(res, { data: item, message: "Order status updated" });
@@ -104,7 +132,49 @@ export const userOrderNotes = async (req, res) => {
 
 export const createUserOrderNote = async (req, res) => {
   const result = await createAdminUserOrderNote(req.params.id, req.validatedBody || req.body, req.user.id);
-  sendSuccess(res, { data: result.rows, meta: result.meta, message: "Team note saved", status: 201 });
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: 'Team note saved', status: 201 });
+};
+
+export const updateUserOrderNote = async (req, res) => {
+  const result = await updateAdminUserOrderNote(
+    req.params.id,
+    req.params.noteId,
+    req.validatedBody || req.body,
+    req.user.id,
+  );
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: 'Note updated' });
+};
+
+export const deleteUserOrderNote = async (req, res) => {
+  await deleteAdminUserOrderNote(req.params.id, req.params.noteId);
+  // Return the updated notes list for easy frontend refresh
+  const result = await getAdminUserOrderNotes(req.params.id, { page: 1, perPage: 50 });
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: 'Note deleted' });
+};
+
+/**
+ * POST /api/admin/user-orders/:id/files
+ * Upload one or more files to an order on behalf of admin/assistant.
+ * Reads `folderType` from the multipart form field (default: 'private').
+ */
+export const uploadAdminOrderFile = async (req, res) => {
+  const { folderType = 'private' } = req.validatedBody || req.body || {};
+  const item = await uploadAdminFilesToOrder(
+    req.params.id,
+    req.files || [],
+    req.user.id,
+    folderType,
+  );
+  sendSuccess(res, { data: item, message: 'Files uploaded', status: 201 });
+};
+
+/**
+ * DELETE /api/admin/user-orders/:id/files/:fileId
+ * Delete a file from an order (admin/assistant, no ownership check).
+ */
+export const deleteAdminOrderFileHandler = async (req, res) => {
+  const item = await deleteAdminOrderFile(req.params.id, req.params.fileId);
+  sendSuccess(res, { data: item, message: 'File deleted' });
 };
 
 export const createUserRecord = async (req, res) => {

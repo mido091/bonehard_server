@@ -66,6 +66,7 @@ import {
   updateOrderRecord,
   uploadFiles,
   removeFile,
+  renameFile,
   removeOrderRecord,
 } from "../controllers/caseExtra.controller.js";
 
@@ -82,6 +83,7 @@ import {
   customFieldParamSchema,
   customFieldPayloadSchema,
   exportPayloadSchema,
+  fileRenamePayloadSchema,
   filePayloadSchema,
   generalNotePayloadSchema,
   generatorPayloadSchema,
@@ -196,6 +198,7 @@ router.get("/:id/files", validate(idParamSchema, "params"), validate(listQuerySc
 router.post("/:id/files", validate(idParamSchema, "params"), validate(filePayloadSchema), asyncHandler(createFile));
 router.post("/:id/files/upload", validate(idParamSchema, "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(uploadFiles));
 router.get("/:id/files/:fileId/download", validate(z.object({ id: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(downloadFile));
+router.patch("/:id/files/:fileId", validate(z.object({ id: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), validate(fileRenamePayloadSchema), asyncHandler(renameFile));
 router.delete("/:id/files/:fileId", validate(z.object({ id: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeFile));
 router.get("/:id/notes", validate(idParamSchema, "params"), validate(listQuerySchema, "query"), asyncHandler(notes));
 router.post("/:id/notes", validate(idParamSchema, "params"), validate(notePayloadSchema), asyncHandler(createNote));

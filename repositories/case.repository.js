@@ -1,11 +1,12 @@
 import { pool } from "../config/db.js";
+import { CASE_STATUS_PROGRESS_MAP } from "../constants/workflowOptions.js";
 import { toLimitOffsetSql } from "../utils/db.js";
 
 const sortMap = {
   name: "c.name",
   status: "s.name",
   target: "target.name",
-  dueDate: "c.estimated_completion_date",
+  dueDate: "c.target_time",
   createdAt: "c.created_at",
 };
 
@@ -15,22 +16,7 @@ const caseSelect = `
   c.description,
   c.client_description AS clientDescription,
   c.status_id AS statusId,
-  CASE
-    WHEN s.name = 'Completed' OR s.name IN ('Delivered', 'Closed') OR s.sort_order = 30 THEN 'Completed'
-    WHEN s.name = 'In Progress' OR s.name IN (
-      'CASE ON HOLD (DR''S REQUEST)',
-      'Case Approved / QC & Paperwork',
-      'Need New CBCT Scan',
-      'Planning',
-      'Planning Completed (Need Scheduling)',
-      'Pending Doctor Approval',
-      'Surgical Guide Design',
-      'Guide Printing',
-      'Finishing / Preparing for Shipping',
-      'QC'
-    ) OR s.sort_order = 20 THEN 'In Progress'
-    ELSE 'New'
-  END AS statusName,
+  s.name AS statusName,
   s.color AS statusColor,
   c.target_id AS targetId,
   target.name AS targetName,
@@ -43,6 +29,10 @@ const caseSelect = `
   c.target_time AS targetTime,
   c.contact_phone AS contactPhone,
   c.contact_email AS contactEmail,
+  c.implant_system AS implantSystem,
+  c.implant_system_other AS implantSystemOther,
+  c.services_needed_json AS servicesNeededJson,
+  c.services_needed_other AS servicesNeededOther,
   c.custom_uid AS customUid,
   c.progress_tracking AS progressTracking,
   c.price,
@@ -59,6 +49,39 @@ const caseSelect = `
   COALESCE(task_stats.totalTasks, 0) AS totalTasks,
   COALESCE(task_stats.completedTasks, 0) AS completedTasks
 `;
+
+const parseJsonArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const progressForStatus = (statusName, fallback = 0) => {
+  if (Object.prototype.hasOwnProperty.call(CASE_STATUS_PROGRESS_MAP, statusName)) {
+    return CASE_STATUS_PROGRESS_MAP[statusName];
+  }
+  return Number(fallback || 0);
+};
+
+const hydrateCaseRow = (row) => {
+  if (!row) return null;
+  return {
+    ...row,
+    servicesNeeded: parseJsonArray(row.servicesNeededJson),
+    servicesNeededJson: undefined,
+    progressPercentage: progressForStatus(row.statusName, row.progressPercentage),
+  };
+};
+
+const statusProgressSql = `CASE s.name
+            ${Object.entries(CASE_STATUS_PROGRESS_MAP).map(([name, progress]) => `WHEN '${name.replace(/'/g, "''")}' THEN ${progress}`).join("\n            ")}
+            ELSE 0
+          END`;
 
 const caseJoins = `
   LEFT JOIN case_statuses s ON s.id = c.status_id
@@ -165,12 +188,12 @@ const buildCaseFilters = (filters) => {
   }
 
   if (filters.fromDueDate) {
-    where.push("c.estimated_completion_date >= :fromDueDate");
+    where.push("c.target_time >= :fromDueDate");
     params.fromDueDate = filters.fromDueDate;
   }
 
   if (filters.toDueDate) {
-    where.push("c.estimated_completion_date <= :toDueDate");
+    where.push("c.target_time <= :toDueDate");
     params.toDueDate = filters.toDueDate;
   }
 
@@ -209,7 +232,7 @@ export const listCases = async (filters) => {
   );
 
   return {
-    rows,
+    rows: rows.map(hydrateCaseRow),
     meta: {
       page: paging.page,
       perPage: paging.perPage,
@@ -230,7 +253,7 @@ export const getCaseById = async (id) => {
     { id },
   );
 
-  return rows[0] || null;
+  return hydrateCaseRow(rows[0]);
 };
 
 export const createCase = async (data, userId, connection = pool) => {
@@ -239,12 +262,16 @@ export const createCase = async (data, userId, connection = pool) => {
       INSERT INTO cases (
         name, description, client_description, status_id, target_id, secondary_client_id,
         project_leader_id, start_date, estimated_completion_date, target_time,
-        contact_phone, contact_email, custom_uid, progress_tracking, price, color, template_id, created_by
+        contact_phone, contact_email, implant_system, implant_system_other, services_needed_json,
+        services_needed_other, custom_uid, progress_tracking, progress_percentage, price, color, template_id, created_by
       )
       VALUES (
         :name, :description, :clientDescription, :statusId, :targetId, :secondaryClientId,
         :projectLeaderId, :startDate, :estimatedCompletionDate, :targetTime,
-        :contactPhone, :contactEmail, :customUid, :progressTracking, :price, :color, :templateId, :createdBy
+        :contactPhone, :contactEmail, :implantSystem, :implantSystemOther, :servicesNeededJson,
+        :servicesNeededOther, :customUid, :progressTracking,
+        (SELECT ${statusProgressSql} FROM case_statuses s WHERE s.id = :statusId LIMIT 1),
+        :price, :color, :templateId, :createdBy
       )
     `,
     {
@@ -259,6 +286,10 @@ export const createCase = async (data, userId, connection = pool) => {
       targetTime: data.targetTime || null,
       contactPhone: data.contactPhone || null,
       contactEmail: data.contactEmail || null,
+      implantSystem: data.implantSystem || null,
+      implantSystemOther: data.implantSystem === "Other" ? data.implantSystemOther || null : null,
+      servicesNeededJson: JSON.stringify(data.servicesNeeded || []),
+      servicesNeededOther: (data.servicesNeeded || []).includes("Other") ? data.servicesNeededOther || null : null,
       customUid: data.customUid || null,
       progressTracking: data.progressTracking === false ? 0 : 1,
       price: data.price === "" ? null : data.price ?? null,
@@ -280,12 +311,19 @@ export const updateCase = async (id, data, connection = pool) => {
         description = :description,
         client_description = :clientDescription,
         status_id = :statusId,
+        progress_percentage = (SELECT ${statusProgressSql} FROM case_statuses s WHERE s.id = :statusId LIMIT 1),
         target_id = :targetId,
         secondary_client_id = :secondaryClientId,
         project_leader_id = :projectLeaderId,
         start_date = :startDate,
         estimated_completion_date = :estimatedCompletionDate,
         target_time = :targetTime,
+        contact_phone = :contactPhone,
+        contact_email = :contactEmail,
+        implant_system = :implantSystem,
+        implant_system_other = :implantSystemOther,
+        services_needed_json = :servicesNeededJson,
+        services_needed_other = :servicesNeededOther,
         custom_uid = :customUid,
         progress_tracking = :progressTracking,
         price = :price,
@@ -304,6 +342,12 @@ export const updateCase = async (id, data, connection = pool) => {
       startDate: data.startDate || null,
       estimatedCompletionDate: data.estimatedCompletionDate || null,
       targetTime: data.targetTime || null,
+      contactPhone: data.contactPhone || null,
+      contactEmail: data.contactEmail || null,
+      implantSystem: data.implantSystem || null,
+      implantSystemOther: data.implantSystem === "Other" ? data.implantSystemOther || null : null,
+      servicesNeededJson: JSON.stringify(data.servicesNeeded || []),
+      servicesNeededOther: (data.servicesNeeded || []).includes("Other") ? data.servicesNeededOther || null : null,
       customUid: data.customUid || null,
       progressTracking: data.progressTracking === false ? 0 : 1,
       price: data.price === "" ? null : data.price ?? null,
@@ -320,6 +364,8 @@ export const cloneCase = async (id, userId, connection = pool) => {
         secondary_client_id AS secondaryClientId, project_leader_id AS projectLeaderId,
         start_date AS startDate, estimated_completion_date AS estimatedCompletionDate,
         target_time AS targetTime, custom_uid AS customUid, progress_tracking AS progressTracking,
+        implant_system AS implantSystem, implant_system_other AS implantSystemOther,
+        services_needed_json AS servicesNeededJson, services_needed_other AS servicesNeededOther,
         price, color, template_id AS templateId
       FROM cases
       WHERE id = :id
@@ -336,12 +382,16 @@ export const cloneCase = async (id, userId, connection = pool) => {
       INSERT INTO cases (
         name, description, status_id, target_id, secondary_client_id,
         project_leader_id, start_date, estimated_completion_date, target_time,
-        custom_uid, progress_tracking, price, color, template_id, created_by
+        implant_system, implant_system_other, services_needed_json, services_needed_other,
+        custom_uid, progress_tracking, progress_percentage, price, color, template_id, created_by
       )
       VALUES (
         :name, :description, :statusId, :targetId, :secondaryClientId,
         :projectLeaderId, :startDate, :estimatedCompletionDate, :targetTime,
-        :customUid, :progressTracking, :price, :color, :templateId, :createdBy
+        :implantSystem, :implantSystemOther, :servicesNeededJson, :servicesNeededOther,
+        :customUid, :progressTracking,
+        (SELECT ${statusProgressSql} FROM case_statuses s WHERE s.id = :statusId LIMIT 1),
+        :price, :color, :templateId, :createdBy
       )
     `,
     {
@@ -357,7 +407,13 @@ export const cloneCase = async (id, userId, connection = pool) => {
 
 export const updateCaseStatus = async (id, statusId) => {
   await pool.execute(
-    `UPDATE cases SET status_id = :statusId WHERE id = :id`,
+    `
+      UPDATE cases c
+      JOIN case_statuses s ON s.id = :statusId
+      SET c.status_id = :statusId,
+          c.progress_percentage = ${statusProgressSql}
+      WHERE c.id = :id
+    `,
     { id, statusId },
   );
 };
@@ -397,8 +453,8 @@ export const countCaseStats = async () => {
     `
       SELECT
         COUNT(*) AS totalCases,
-        SUM(CASE WHEN s.name = 'New' THEN 1 ELSE 0 END) AS pendingCases,
-        SUM(CASE WHEN s.name <> 'New' THEN 1 ELSE 0 END) AS otherStatusCases
+        SUM(CASE WHEN s.name = 'Order Received' THEN 1 ELSE 0 END) AS pendingCases,
+        SUM(CASE WHEN s.name <> 'Order Received' THEN 1 ELSE 0 END) AS otherStatusCases
       FROM cases c
       LEFT JOIN case_statuses s ON s.id = c.status_id
       LEFT JOIN users creator ON creator.id = c.created_by

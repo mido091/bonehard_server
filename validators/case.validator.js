@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  CASE_STATUS_NAMES,
+  IMPLANT_SYSTEM_OPTIONS,
+  SERVICES_NEEDED_OPTIONS,
+} from "../constants/workflowOptions.js";
 
 const optionalDate = z
   .string()
@@ -18,6 +23,33 @@ const optionalHexColor = z
   .optional()
   .nullable()
   .or(z.literal(""));
+
+const optionalOtherText = z.string().trim().max(255).optional().nullable().or(z.literal(""));
+
+const workflowFieldsSchema = {
+  implantSystem: z.enum(IMPLANT_SYSTEM_OPTIONS).optional().nullable().or(z.literal("")),
+  implantSystemOther: optionalOtherText,
+  servicesNeeded: z.array(z.enum(SERVICES_NEEDED_OPTIONS)).optional().default([]),
+  servicesNeededOther: optionalOtherText,
+};
+
+const validateWorkflowOtherFields = (payload, ctx) => {
+  if (payload.implantSystem !== "Other" && payload.implantSystemOther) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["implantSystemOther"],
+      message: "Implant system details are only allowed when Other is selected",
+    });
+  }
+
+  if (!(payload.servicesNeeded || []).includes("Other") && payload.servicesNeededOther) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["servicesNeededOther"],
+      message: "Service details are only allowed when Other is selected",
+    });
+  }
+};
 
 export const caseListQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -63,11 +95,12 @@ export const casePayloadSchema = z.object({
   templateId: optionalId,
   teamMemberIds: optionalIdArray,
   customFieldValues: z.record(z.string(), z.any()).optional().default({}),
-});
+  ...workflowFieldsSchema,
+}).superRefine(validateWorkflowOtherFields);
 
 export const statusPayloadSchema = z.object({
   statusId: z.coerce.number().int().positive().optional(),
-  statusName: z.enum(["New", "In Progress", "Completed"]).optional(),
+  statusName: z.enum(CASE_STATUS_NAMES).optional(),
 }).refine(
   (value) => Boolean(value.statusId || value.statusName),
   { message: "statusId or statusName is required" },

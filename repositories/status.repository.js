@@ -1,6 +1,7 @@
 import { pool } from "../config/db.js";
+import { CASE_STATUS_NAMES } from "../constants/workflowOptions.js";
 
-export const officialCaseStatuses = ["New", "In Progress", "Completed"];
+export const officialCaseStatuses = CASE_STATUS_NAMES;
 
 const officialStatusParams = Object.fromEntries(
   officialCaseStatuses.map((name, index) => [`officialStatus_${index}`, name]),

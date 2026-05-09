@@ -65,6 +65,7 @@ export const notePayloadSchema = z.object({
 export const generalNotePayloadSchema = z.object({
   title: z.string().trim().min(2).max(190),
   content: z.string().trim().max(200000).optional().nullable(),
+  isPrivate: z.coerce.boolean().optional().default(false),
 });
 
 export const timerPayloadSchema = z.object({
@@ -90,6 +91,10 @@ export const filePayloadSchema = z.object({
   mimeType: z.string().trim().max(120).optional().nullable(),
   fileSize: z.coerce.number().int().min(0).optional().default(0),
   storageProvider: z.string().trim().max(60).optional().default("external"),
+});
+
+export const fileRenamePayloadSchema = z.object({
+  fileName: z.string().trim().min(2).max(190),
 });
 
 export const clientTalkPayloadSchema = z.object({

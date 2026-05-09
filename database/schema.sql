@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS case_files (
   cloudinary_secure_url VARCHAR(700) NULL,
   cloudinary_version BIGINT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_case_files_case FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE,
   CONSTRAINT fk_case_files_user FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_case_files_case_folder (case_id, folder_type),
@@ -628,12 +629,17 @@ ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_resource_type VARCHAR(30) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_secure_url VARCHAR(700) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_version BIGINT UNSIGNED NULL;
+ALTER TABLE case_files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS progress_tracking TINYINT(1) NOT NULL DEFAULT 1;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS price DECIMAL(12,2) NULL;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS color VARCHAR(32) NULL;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS template_id BIGINT UNSIGNED NULL;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(40) NULL;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_email VARCHAR(190) NULL;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS implant_system VARCHAR(120) NULL;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS implant_system_other VARCHAR(190) NULL;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS services_needed_json JSON NULL;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS services_needed_other VARCHAR(255) NULL;
 ALTER TABLE case_tasks MODIFY COLUMN priority ENUM('low', 'normal', 'medium', 'high', 'urgent') NOT NULL DEFAULT 'normal';
 ALTER TABLE case_tasks ADD COLUMN IF NOT EXISTS private_task TINYINT(1) NOT NULL DEFAULT 0;
 ALTER TABLE case_tasks ADD COLUMN IF NOT EXISTS estimated_minutes INT UNSIGNED NULL;
@@ -670,3 +676,8 @@ ALTER TABLE case_template_tasks ADD COLUMN IF NOT EXISTS due_offset_days INT NUL
 ALTER TABLE case_template_tasks ADD COLUMN IF NOT EXISTS tags_json JSON NULL;
 ALTER TABLE case_tasks ADD COLUMN IF NOT EXISTS prevent_editing TINYINT(1) NOT NULL DEFAULT 0;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS client_description LONGTEXT NULL;
+
+-- Team notes visibility: is_private=1 means admin/assistant only; 0 means everyone including users
+ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS is_private TINYINT(1) NOT NULL DEFAULT 0;
+-- Track who last updated the note
+ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS updated_by BIGINT UNSIGNED NULL;

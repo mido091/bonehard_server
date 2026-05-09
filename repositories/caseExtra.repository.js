@@ -38,38 +38,104 @@ export const createCaseNote = async (caseId, payload, userId) => {
   );
 };
 
-export const listCaseGeneralNotes = async (caseId, query) => {
+/**
+ * List general notes for a case.
+ * @param {boolean} [options.publicOnly] - If true, only return non-private notes (for user-facing views).
+ */
+export const listCaseGeneralNotes = async (caseId, query, options = {}) => {
   const paging = toLimitOffsetSql(query);
+  const where = ["n.case_id = :caseId"];
+  const params = { caseId };
+
+  // Public-only filter: hide private notes from user-facing views
+  if (options.publicOnly) {
+    where.push("n.is_private = 0");
+  }
+
   const [rows] = await pool.execute(
     `
-      SELECT n.id, n.title, n.content, n.created_by AS createdBy, u.name AS createdByName,
+      SELECT n.id, n.title, n.content, n.is_private AS isPrivate,
+        n.created_by AS createdBy, u.name AS createdByName,
         u.email AS createdByEmail, u.role AS createdByRole,
+        ub.name AS updatedByName,
         n.created_at AS createdAt, n.updated_at AS updatedAt
       FROM case_general_notes n
       LEFT JOIN users u ON u.id = n.created_by
-      WHERE n.case_id = :caseId
+      LEFT JOIN users ub ON ub.id = n.updated_by
+      WHERE ${where.join(" AND ")}
       ORDER BY n.updated_at DESC, n.id DESC
       ${paging.sql}
     `,
-    { caseId },
+    params,
   );
 
   const [countRows] = await pool.execute(
-    `SELECT COUNT(*) AS total FROM case_general_notes WHERE case_id = :caseId`,
-    { caseId },
+    `SELECT COUNT(*) AS total FROM case_general_notes n WHERE ${where.join(" AND ")}`,
+    params,
   );
 
   return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
 };
 
+/** Fetch a single general note by ID (for ownership/update checks). */
+export const getCaseGeneralNoteById = async (caseId, noteId) => {
+  const [rows] = await pool.execute(
+    `SELECT id, case_id AS caseId, title, content, is_private AS isPrivate,
+       created_by AS createdBy, updated_by AS updatedBy,
+       created_at AS createdAt, updated_at AS updatedAt
+     FROM case_general_notes
+     WHERE id = :noteId AND case_id = :caseId
+     LIMIT 1`,
+    { caseId, noteId },
+  );
+  return rows[0] || null;
+};
+
 export const createCaseGeneralNote = async (caseId, payload, userId) => {
+  const [result] = await pool.execute(
+    `
+      INSERT INTO case_general_notes (case_id, title, content, is_private, created_by)
+      VALUES (:caseId, :title, :content, :isPrivate, :userId)
+    `,
+    {
+      caseId,
+      title: payload.title,
+      content: payload.content || null,
+      isPrivate: payload.isPrivate ? 1 : 0,
+      userId,
+    },
+  );
+  return getCaseGeneralNoteById(caseId, result.insertId);
+};
+
+/** Update note content / visibility. */
+export const updateCaseGeneralNote = async (caseId, noteId, payload, userId) => {
   await pool.execute(
     `
-      INSERT INTO case_general_notes (case_id, title, content, created_by)
-      VALUES (:caseId, :title, :content, :userId)
+      UPDATE case_general_notes
+      SET title = :title, content = :content, is_private = :isPrivate,
+          updated_by = :userId, updated_at = CURRENT_TIMESTAMP
+      WHERE id = :noteId AND case_id = :caseId
     `,
-    { caseId, title: payload.title, content: payload.content || null, userId },
+    {
+      caseId,
+      noteId,
+      title: payload.title,
+      content: payload.content || null,
+      isPrivate: payload.isPrivate ? 1 : 0,
+      userId,
+    },
   );
+  return getCaseGeneralNoteById(caseId, noteId);
+};
+
+/** Hard-delete a general note. */
+export const deleteCaseGeneralNote = async (caseId, noteId) => {
+  const [result] = await pool.execute(
+    `DELETE FROM case_general_notes WHERE id = :noteId AND case_id = :caseId`,
+    { caseId, noteId },
+  );
+  return result.affectedRows > 0;
 };
 
 export const listCaseTimers = async (caseId, query) => {
@@ -192,7 +258,7 @@ export const listCaseFiles = async (caseId, query) => {
         f.file_size AS fileSize, f.storage_provider AS storageProvider, f.uploaded_by AS uploadedBy,
         f.cloudinary_public_id AS cloudinaryPublicId, f.cloudinary_resource_type AS cloudinaryResourceType,
         f.cloudinary_secure_url AS cloudinarySecureUrl, f.cloudinary_version AS cloudinaryVersion,
-        u.name AS uploadedByName, f.created_at AS createdAt
+        u.name AS uploadedByName, f.created_at AS createdAt, COALESCE(f.updated_at, f.created_at) AS updatedAt
       FROM case_files f
       LEFT JOIN users u ON u.id = f.uploaded_by
       WHERE ${where.join(" AND ")}
@@ -255,7 +321,7 @@ export const getCaseFileById = async (caseId, fileId) => {
         storage_provider AS storageProvider, uploaded_by AS uploadedBy,
         cloudinary_public_id AS cloudinaryPublicId, cloudinary_resource_type AS cloudinaryResourceType,
         cloudinary_secure_url AS cloudinarySecureUrl, cloudinary_version AS cloudinaryVersion,
-        created_at AS createdAt
+        created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt
       FROM case_files
       WHERE id = :fileId AND case_id = :caseId
       LIMIT 1
@@ -272,6 +338,24 @@ export const deleteCaseFile = async (caseId, fileId) => {
     `DELETE FROM case_files WHERE id = :fileId AND case_id = :caseId`,
     { caseId, fileId }
   );
+};
+
+export const updateCaseFileName = async (caseId, fileId, fileName) => {
+  const cleanName = cleanUploadDisplayName(fileName);
+  if (!cleanName || cleanName.length < 2) {
+    throw new Error("File name must be at least 2 characters");
+  }
+
+  await pool.execute(
+    `
+      UPDATE case_files
+      SET file_name = :fileName, updated_at = CURRENT_TIMESTAMP
+      WHERE id = :fileId AND case_id = :caseId
+    `,
+    { caseId, fileId, fileName: cleanName },
+  );
+
+  return getCaseFileById(caseId, fileId);
 };
 
 export const listOrders = async (query) => {
