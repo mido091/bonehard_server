@@ -1,32 +1,39 @@
 import path from "node:path";
+import { mkdirSync } from "node:fs";
 import multer from "multer";
 import { ApiError } from "../utils/apiResponse.js";
 import { validateUploadedFiles } from "../utils/fileValidation.js";
+import {
+  CASE_ALLOWED_UPLOAD_EXTENSIONS,
+  CASE_ALLOWED_UPLOAD_HINT,
+  CASE_ALLOWED_UPLOAD_MIME_TYPES,
+  MAX_CASE_FILES_PER_REQUEST,
+  MAX_CASE_FILE_SIZE_BYTES,
+  MAX_CASE_FILE_SIZE_MB,
+} from "../constants/uploadOptions.js";
 
 export const CASE_UPLOAD_ROOT = path.resolve(process.cwd(), "uploads", "cases");
+mkdirSync(CASE_UPLOAD_ROOT, { recursive: true });
 
-const MAX_FILES = 20;
-const MAX_FILE_SIZE_MB = 100;
-const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
-const ALLOWED_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
-]);
-const ALLOWED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"]);
+const ALLOWED_MIME_TYPES = new Set(CASE_ALLOWED_UPLOAD_MIME_TYPES);
+const ALLOWED_EXTENSIONS = new Set(CASE_ALLOWED_UPLOAD_EXTENSIONS);
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: CASE_UPLOAD_ROOT,
+    filename: (_req, file, callback) => {
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      callback(null, `${unique}${path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
   limits: {
-    fileSize: MAX_FILE_SIZE,
-    files: MAX_FILES,
+    fileSize: MAX_CASE_FILE_SIZE_BYTES,
+    files: MAX_CASE_FILES_PER_REQUEST,
   },
   fileFilter: (_req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
-    if (!ALLOWED_MIME_TYPES.has(file.mimetype) || !ALLOWED_EXTENSIONS.has(extension)) {
-      callback(new ApiError(415, "Only image files and PDFs are allowed"));
+    if (!ALLOWED_EXTENSIONS.has(extension)) {
+      callback(new ApiError(415, CASE_ALLOWED_UPLOAD_HINT));
       return;
     }
     callback(null, true);
@@ -34,16 +41,16 @@ const upload = multer({
 });
 
 export const handleCaseFileUpload = (req, res, next) => {
-  upload.array("files", MAX_FILES)(req, res, async (error) => {
+  upload.array("files", MAX_CASE_FILES_PER_REQUEST)(req, res, async (error) => {
     if (!error) {
       try {
         await validateUploadedFiles({
           files: req.files || [],
           allowedMimeTypes: ALLOWED_MIME_TYPES,
           allowedExtensions: ALLOWED_EXTENSIONS,
-          maxTotalBytes: MAX_FILE_SIZE,
-          tooLargeMessage: `Upload size too large. Maximum is ${MAX_FILE_SIZE_MB}MB total.`,
-          invalidTypeMessage: "Only image files and PDFs are allowed",
+          maxTotalBytes: MAX_CASE_FILE_SIZE_BYTES * MAX_CASE_FILES_PER_REQUEST,
+          tooLargeMessage: `Upload size too large. Maximum is ${MAX_CASE_FILE_SIZE_MB}MB per file.`,
+          invalidTypeMessage: CASE_ALLOWED_UPLOAD_HINT,
         });
         next();
         return;
@@ -55,7 +62,7 @@ export const handleCaseFileUpload = (req, res, next) => {
 
     if (error instanceof multer.MulterError) {
       const message = error.code === "LIMIT_FILE_SIZE"
-        ? `File size too large. Maximum is ${MAX_FILE_SIZE_MB}MB per file.`
+        ? `File size too large. Maximum is ${MAX_CASE_FILE_SIZE_MB}MB per file.`
         : error.message;
       next(new ApiError(422, message));
       return;

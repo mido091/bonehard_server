@@ -1,4 +1,5 @@
 import path from "node:path";
+import { open } from "node:fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { ApiError } from "./apiResponse.js";
 
@@ -66,20 +67,35 @@ export const validateUploadedFiles = async ({
 
   for (const file of flatFiles) {
     const extension = path.extname(file.originalname).toLowerCase();
-    const detected = await detectFileType(file.buffer || Buffer.alloc(0));
+    let sample = file.buffer;
+    if (!sample && file.path) {
+      let handle;
+      try {
+        handle = await open(file.path, "r");
+        const buffer = Buffer.alloc(4100);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        sample = buffer.subarray(0, bytesRead);
+      } catch {
+        sample = Buffer.alloc(0);
+      } finally {
+        await handle?.close();
+      }
+    }
+    const detected = await detectFileType(sample || Buffer.alloc(0));
     const detectedExtension = detected?.ext ? `.${detected.ext.toLowerCase()}` : "";
 
-    if (
-      !detected ||
-      !allowedMimeTypes.has(detected.mime) ||
-      !allowedMimeTypes.has(file.mimetype) ||
-      !allowedExtensions.has(extension) ||
-      !allowedExtensions.has(detectedExtension)
-    ) {
+    if (!allowedExtensions.has(extension)) {
+      throw new ApiError(415, invalidTypeMessage);
+    }
+
+    // Binary dental/video/archive formats often arrive as application/octet-stream
+    // and cannot be reliably sniffed. For these, extension validation is the
+    // stable contract; for recognizable formats we still verify the detected MIME.
+    if (detected && !allowedMimeTypes.has(detected.mime) && !allowedExtensions.has(detectedExtension)) {
       throw new ApiError(415, invalidTypeMessage);
     }
 
     file.originalname = safeOriginalName(file.originalname);
-    file.detectedMimeType = detected.mime;
+    file.detectedMimeType = detected?.mime || file.mimetype || "application/octet-stream";
   }
 };

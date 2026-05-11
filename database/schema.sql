@@ -216,6 +216,8 @@ CREATE TABLE IF NOT EXISTS case_files (
   case_id BIGINT UNSIGNED NOT NULL,
   uploaded_by BIGINT UNSIGNED NULL,
   folder_type ENUM('private', 'public', 'tasks') NOT NULL DEFAULT 'private',
+  upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'photos_documents',
+  upload_category_other_label VARCHAR(120) NULL,
   file_name VARCHAR(190) NOT NULL,
   file_url VARCHAR(700) NOT NULL,
   mime_type VARCHAR(120) NULL,
@@ -230,6 +232,7 @@ CREATE TABLE IF NOT EXISTS case_files (
   CONSTRAINT fk_case_files_case FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE,
   CONSTRAINT fk_case_files_user FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_case_files_case_folder (case_id, folder_type),
+  INDEX idx_case_files_case_category (case_id, upload_category),
   INDEX idx_case_files_case_created (case_id, created_at)
 );
 
@@ -625,11 +628,69 @@ ALTER TABLE case_timers ADD COLUMN IF NOT EXISTS client_id BIGINT UNSIGNED NULL;
 ALTER TABLE case_timers ADD COLUMN IF NOT EXISTS completed_at DATETIME NULL;
 ALTER TABLE case_timers ADD COLUMN IF NOT EXISTS is_invoiced TINYINT(1) NOT NULL DEFAULT 0;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS folder_type ENUM('private', 'public', 'tasks') NOT NULL DEFAULT 'private';
+ALTER TABLE case_files MODIFY COLUMN upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'photos_documents';
+ALTER TABLE case_files ADD COLUMN IF NOT EXISTS upload_category_other_label VARCHAR(120) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_resource_type VARCHAR(30) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_secure_url VARCHAR(700) NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS cloudinary_version BIGINT UNSIGNED NULL;
 ALTER TABLE case_files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_case_files_case_category ON case_files (case_id, upload_category);
+
+CREATE TABLE IF NOT EXISTS admin_library_files (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  uploaded_by BIGINT UNSIGNED NULL,
+  visibility ENUM('private', 'public') NOT NULL DEFAULT 'private',
+  upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'general',
+  upload_category_other_label VARCHAR(120) NULL,
+  file_name VARCHAR(255) NOT NULL,
+  file_url VARCHAR(700) NOT NULL,
+  mime_type VARCHAR(120) NULL,
+  file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  storage_provider VARCHAR(40) NOT NULL DEFAULT 'supabase',
+  storage_path VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_admin_library_files_user FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_admin_library_files_visibility (visibility, uploaded_by, created_at),
+  INDEX idx_admin_library_files_name (file_name)
+);
+ALTER TABLE admin_library_files MODIFY COLUMN upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'general';
+ALTER TABLE admin_library_files ADD COLUMN IF NOT EXISTS upload_category_other_label VARCHAR(120) NULL;
+
+CREATE TABLE IF NOT EXISTS admin_library_notes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  created_by BIGINT UNSIGNED NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  visibility ENUM('private', 'public') NOT NULL DEFAULT 'private',
+  note_type VARCHAR(80) NOT NULL DEFAULT 'General',
+  title VARCHAR(190) NOT NULL,
+  content TEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_admin_library_notes_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_admin_library_notes_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_admin_library_notes_visibility (visibility, created_by, created_at),
+  INDEX idx_admin_library_notes_title (title)
+);
+
+CREATE TABLE IF NOT EXISTS resource_links (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  entity_type ENUM('case', 'case_note', 'admin_library_note', 'order') NOT NULL,
+  entity_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NULL,
+  label VARCHAR(160) NULL,
+  url VARCHAR(1000) NOT NULL,
+  sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+  created_by BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_resource_links_case FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE,
+  CONSTRAINT fk_resource_links_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_resource_links_entity (entity_type, entity_id, sort_order),
+  INDEX idx_resource_links_case (case_id, entity_type)
+);
+
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS progress_tracking TINYINT(1) NOT NULL DEFAULT 1;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS price DECIMAL(12,2) NULL;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS color VARCHAR(32) NULL;
@@ -681,3 +742,5 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS client_description LONGTEXT NULL;
 ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS is_private TINYINT(1) NOT NULL DEFAULT 0;
 -- Track who last updated the note
 ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS updated_by BIGINT UNSIGNED NULL;
+
+ALTER TABLE resource_links MODIFY COLUMN entity_type ENUM('case', 'case_note', 'admin_library_note', 'order') NOT NULL;

@@ -11,7 +11,9 @@ export const defaultChatPaymentSettings = {
 };
 
 export const normalizeChatPaymentSettings = (value = {}) => ({
-  paymentEnabled: value.paymentEnabled === true || value.paymentEnabled === 1,
+  // Paid chat is intentionally disabled from the product UI. Keep the persisted
+  // shape compatible, but make the free chat path the secure default everywhere.
+  paymentEnabled: false,
   planPrice: Number(value.planPrice || 0),
   walletNumber: String(value.walletNumber || "").trim(),
   instapayHandle: String(value.instapayHandle || "").trim(),

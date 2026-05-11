@@ -74,6 +74,7 @@ export const listCaseGeneralNotes = async (caseId, query, options = {}) => {
     params,
   );
 
+  await attachResourceLinks(rows, "case_note");
   return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
 };
 
@@ -108,6 +109,272 @@ export const createCaseGeneralNote = async (caseId, payload, userId) => {
   return getCaseGeneralNoteById(caseId, result.insertId);
 };
 
+const normalizeResourceLinks = (links = []) => {
+  if (!Array.isArray(links)) return [];
+  return links
+    .map((link) => ({
+      label: String(link?.label || "").trim().slice(0, 160) || null,
+      url: String(link?.url || "").trim().slice(0, 1000),
+    }))
+    .filter((link) => link.url);
+};
+
+export const listResourceLinks = async (entityType, entityId, options = {}) => {
+  const where = ["entity_type = :entityType", "entity_id = :entityId"];
+  const params = { entityType, entityId };
+
+  if (options.caseId) {
+    where.push("case_id = :caseId");
+    params.caseId = options.caseId;
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT id, entity_type AS entityType, entity_id AS entityId, case_id AS caseId,
+        label, url, sort_order AS sortOrder, created_by AS createdBy,
+        created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt
+      FROM resource_links
+      WHERE ${where.join(" AND ")}
+      ORDER BY sort_order ASC, id ASC
+    `,
+    params,
+  );
+
+  return rows;
+};
+
+export const attachResourceLinks = async (rows = [], entityType) => {
+  if (!rows.length) return rows;
+
+  await Promise.all(rows.map(async (row) => {
+    row.links = await listResourceLinks(entityType, row.id, row.caseId ? { caseId: row.caseId } : {});
+  }));
+
+  return rows;
+};
+
+export const replaceResourceLinks = async (entityType, entityId, links = [], userId, options = {}, connection = pool) => {
+  const cleanLinks = normalizeResourceLinks(links);
+  await connection.execute(
+    `DELETE FROM resource_links WHERE entity_type = :entityType AND entity_id = :entityId`,
+    { entityType, entityId },
+  );
+
+  for (let index = 0; index < cleanLinks.length; index += 1) {
+    const link = cleanLinks[index];
+    await connection.execute(
+      `
+        INSERT INTO resource_links (entity_type, entity_id, case_id, label, url, sort_order, created_by)
+        VALUES (:entityType, :entityId, :caseId, :label, :url, :sortOrder, :createdBy)
+      `,
+      {
+        entityType,
+        entityId,
+        caseId: options.caseId || null,
+        label: link.label,
+        url: link.url,
+        sortOrder: index,
+        createdBy: userId || null,
+      },
+    );
+  }
+
+  return listResourceLinks(entityType, entityId, options);
+};
+
+export const deleteResourceLinks = async (entityType, entityId, connection = pool) => {
+  await connection.execute(
+    `DELETE FROM resource_links WHERE entity_type = :entityType AND entity_id = :entityId`,
+    { entityType, entityId },
+  );
+};
+
+export const listCaseNotesGlobal = async (query = {}, viewer = {}) => {
+  const paging = toLimitOffsetSql(query);
+  const params = {};
+  const where = ["c.is_archived = 0"];
+
+  if (query.search) {
+    where.push("(c.name LIKE :search OR n.title LIKE :search OR n.content LIKE :search)");
+    params.search = `%${query.search}%`;
+  }
+
+  if (query.folderType === "public") {
+    where.push("n.is_private = 0");
+  } else if (query.folderType === "private") {
+    where.push("n.is_private = 1");
+  }
+
+  if (viewer.role === "user") {
+    where.push("c.target_id = :viewerId AND c.created_by = :viewerId AND n.is_private = 0");
+    params.viewerId = viewer.id;
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT n.id, n.case_id AS caseId, c.name AS caseName,
+        CASE WHEN c.target_id IS NOT NULL AND c.created_by = c.target_id AND creator.role = 'user' THEN 'order' ELSE 'case' END AS sourceType,
+        CASE WHEN n.is_private = 1 THEN 'private' ELSE 'public' END AS visibility,
+        'Team Notes' AS noteType, n.title, n.content,
+        u.name AS createdByName, n.created_at AS createdAt, COALESCE(n.updated_at, n.created_at) AS updatedAt,
+        TRUE AS canManage
+      FROM case_general_notes n
+      JOIN cases c ON c.id = n.case_id
+      LEFT JOIN users creator ON creator.id = c.created_by
+      LEFT JOIN users u ON u.id = n.created_by
+      WHERE ${where.join(" AND ")}
+      ORDER BY c.name ASC, n.updated_at DESC, n.id DESC
+      ${paging.sql}
+    `,
+    params,
+  );
+
+  const [countRows] = await pool.execute(
+    `
+      SELECT COUNT(*) AS total
+      FROM case_general_notes n
+      JOIN cases c ON c.id = n.case_id
+      LEFT JOIN users creator ON creator.id = c.created_by
+      WHERE ${where.join(" AND ")}
+    `,
+    params,
+  );
+
+  await attachResourceLinks(rows, "case_note");
+  return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+export const createAdminLibraryNote = async (payload, userId) => {
+  const [result] = await pool.execute(
+    `
+      INSERT INTO admin_library_notes (created_by, visibility, note_type, title, content)
+      VALUES (:userId, :visibility, :noteType, :title, :content)
+    `,
+    {
+      userId: userId || null,
+      visibility: payload.visibility === "public" || payload.isPrivate === false ? "public" : "private",
+      noteType: payload.noteType || "General",
+      title: payload.title,
+      content: payload.content || null,
+    },
+  );
+  return result.insertId;
+};
+
+export const listAdminLibraryNotes = async (query = {}, viewer = {}) => {
+  const paging = toLimitOffsetSql(query);
+  const where = ["1 = 1"];
+  const params = { viewerId: viewer.id || 0 };
+
+  if (query.search) {
+    where.push("(title LIKE :search OR content LIKE :search)");
+    params.search = `%${query.search}%`;
+  }
+
+  if (query.folderType) {
+    where.push("visibility = :folderType");
+    params.folderType = query.folderType;
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT n.id, NULL AS caseId, 'General Library' AS caseName, 'general' AS sourceType,
+        n.visibility, n.note_type AS noteType, n.title, n.content,
+        n.created_by AS createdBy,
+        u.name AS createdByName, n.created_at AS createdAt, COALESCE(n.updated_at, n.created_at) AS updatedAt,
+        CASE WHEN :viewerRole IN ('admin', 'assistant') OR n.created_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
+      FROM admin_library_notes n
+      LEFT JOIN users u ON u.id = n.created_by
+      WHERE ${where.join(" AND ")}
+      ORDER BY n.created_at DESC, n.id DESC
+      ${paging.sql}
+    `,
+    { ...params, viewerRole: viewer.role || "" },
+  );
+
+  const [countRows] = await pool.execute(
+    `SELECT COUNT(*) AS total FROM admin_library_notes WHERE ${where.join(" AND ")}`,
+    params,
+  );
+
+  await attachResourceLinks(rows, "admin_library_note");
+  return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+export const getAdminLibraryNoteById = async (noteId, viewer = {}) => {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, created_by AS createdBy, visibility, note_type AS noteType, title, content,
+        created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt,
+        CASE WHEN :viewerRole IN ('admin', 'assistant') OR created_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
+      FROM admin_library_notes
+      WHERE id = :noteId AND (visibility = 'public' OR created_by = :viewerId OR :viewerRole IN ('admin', 'assistant'))
+      LIMIT 1
+    `,
+    { noteId, viewerId: viewer.id || 0, viewerRole: viewer.role || "" },
+  );
+  return rows[0] || null;
+};
+
+export const getCaseGeneralNoteByNoteId = async (noteId) => {
+  const [rows] = await pool.execute(
+    `SELECT id, case_id AS caseId, title, content, is_private AS isPrivate,
+       created_by AS createdBy, updated_by AS updatedBy,
+       created_at AS createdAt, updated_at AS updatedAt
+     FROM case_general_notes
+     WHERE id = :noteId
+     LIMIT 1`,
+    { noteId },
+  );
+  return rows[0] || null;
+};
+
+export const updateCaseGeneralNoteByNoteId = async (noteId, payload, userId) => {
+  const note = await getCaseGeneralNoteByNoteId(noteId);
+  if (!note) return null;
+  return updateCaseGeneralNote(note.caseId, noteId, payload, userId);
+};
+
+export const deleteCaseGeneralNoteByNoteId = async (noteId) => {
+  const note = await getCaseGeneralNoteByNoteId(noteId);
+  if (!note) return null;
+  await deleteCaseGeneralNote(note.caseId, noteId);
+  return note;
+};
+
+export const updateAdminLibraryNote = async (noteId, payload, viewer = {}) => {
+  const existing = await getAdminLibraryNoteById(noteId, viewer);
+  if (!existing || !existing.canManage) return null;
+
+  await pool.execute(
+    `
+      UPDATE admin_library_notes
+      SET title = :title, content = :content, visibility = :visibility, note_type = :noteType,
+          updated_by = :userId, updated_at = CURRENT_TIMESTAMP
+      WHERE id = :noteId
+    `,
+    {
+      noteId,
+      title: payload.title,
+      content: payload.content || null,
+      visibility: payload.visibility === "public" || payload.isPrivate === false ? "public" : "private",
+      noteType: payload.noteType || "General",
+      userId: viewer.id || null,
+    },
+  );
+
+  return getAdminLibraryNoteById(noteId, viewer);
+};
+
+export const deleteAdminLibraryNote = async (noteId, viewer = {}) => {
+  const existing = await getAdminLibraryNoteById(noteId, viewer);
+  if (!existing || !existing.canManage) return null;
+
+  await deleteResourceLinks("admin_library_note", noteId);
+  await pool.execute(`DELETE FROM admin_library_notes WHERE id = :noteId`, { noteId });
+  return existing;
+};
+
 /** Update note content / visibility. */
 export const updateCaseGeneralNote = async (caseId, noteId, payload, userId) => {
   await pool.execute(
@@ -131,6 +398,7 @@ export const updateCaseGeneralNote = async (caseId, noteId, payload, userId) => 
 
 /** Hard-delete a general note. */
 export const deleteCaseGeneralNote = async (caseId, noteId) => {
+  await deleteResourceLinks("case_note", noteId);
   const [result] = await pool.execute(
     `DELETE FROM case_general_notes WHERE id = :noteId AND case_id = :caseId`,
     { caseId, noteId },
@@ -254,7 +522,8 @@ export const listCaseFiles = async (caseId, query) => {
 
   const [rows] = await pool.execute(
     `
-      SELECT f.id, f.folder_type AS folderType, f.file_name AS fileName, f.file_url AS fileUrl, f.mime_type AS mimeType,
+      SELECT f.id, f.folder_type AS folderType, f.upload_category AS uploadCategory,
+        f.file_name AS fileName, f.file_url AS fileUrl, f.mime_type AS mimeType,
         f.file_size AS fileSize, f.storage_provider AS storageProvider, f.uploaded_by AS uploadedBy,
         f.cloudinary_public_id AS cloudinaryPublicId, f.cloudinary_resource_type AS cloudinaryResourceType,
         f.cloudinary_secure_url AS cloudinarySecureUrl, f.cloudinary_version AS cloudinaryVersion,
@@ -276,6 +545,186 @@ export const listCaseFiles = async (caseId, query) => {
   return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
 };
 
+export const listCaseFilesGlobal = async (query = {}, viewer = {}) => {
+  const paging = toLimitOffsetSql(query);
+  const where = ["c.is_archived = 0"];
+  const params = {};
+
+  if (query.search) {
+    where.push("(f.file_name LIKE :search OR c.name LIKE :search)");
+    params.search = `%${query.search}%`;
+  }
+
+  if (query.uploadCategory) {
+    where.push("f.upload_category = :uploadCategory");
+    params.uploadCategory = query.uploadCategory;
+  }
+
+  if (query.folderType) {
+    where.push("f.folder_type = :folderType");
+    params.folderType = query.folderType;
+  }
+
+  if (viewer.role === "user") {
+    where.push("c.target_id = :viewerId AND c.created_by = :viewerId AND f.folder_type = 'public'");
+    params.viewerId = viewer.id;
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT f.id, f.case_id AS caseId, c.name AS caseName,
+        CASE WHEN c.target_id IS NOT NULL AND c.created_by = c.target_id AND creator.role = 'user' THEN 'order' ELSE 'case' END AS sourceType,
+        f.folder_type AS folderType, f.upload_category AS uploadCategory,
+        NULL AS uploadCategoryOtherLabel,
+        f.file_name AS fileName, f.file_url AS fileUrl, f.mime_type AS mimeType, f.file_size AS fileSize,
+        f.storage_provider AS storageProvider, f.cloudinary_public_id AS cloudinaryPublicId,
+        u.name AS uploadedByName, f.created_at AS createdAt, COALESCE(f.updated_at, f.created_at) AS updatedAt,
+        TRUE AS canManage
+      FROM case_files f
+      JOIN cases c ON c.id = f.case_id
+      LEFT JOIN users creator ON creator.id = c.created_by
+      LEFT JOIN users u ON u.id = f.uploaded_by
+      WHERE ${where.join(" AND ")}
+      ORDER BY c.name ASC, f.created_at DESC, f.id DESC
+      ${paging.sql}
+    `,
+    params,
+  );
+
+  const [countRows] = await pool.execute(
+    `
+      SELECT COUNT(*) AS total
+      FROM case_files f
+      JOIN cases c ON c.id = f.case_id
+      LEFT JOIN users creator ON creator.id = c.created_by
+      WHERE ${where.join(" AND ")}
+    `,
+    params,
+  );
+
+  return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+export const createAdminLibraryFile = async (payload, userId, connection = pool) => {
+  const [result] = await connection.execute(
+    `
+      INSERT INTO admin_library_files (
+        uploaded_by, visibility, upload_category, file_name, file_url, mime_type, file_size, storage_provider, storage_path
+      )
+      VALUES (
+        :userId, :visibility, :uploadCategory, :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider, :storagePath
+      )
+    `,
+    {
+      userId: userId || null,
+      visibility: payload.visibility === "public" ? "public" : "private",
+      uploadCategory: payload.uploadCategory === "other" ? "general" : payload.uploadCategory || "general",
+      fileName: cleanUploadDisplayName(payload.fileName),
+      fileUrl: payload.fileUrl,
+      mimeType: payload.mimeType || null,
+      fileSize: payload.fileSize || 0,
+      storageProvider: payload.storageProvider || "supabase",
+      storagePath: payload.storagePath || null,
+    },
+  );
+  return result.insertId;
+};
+
+export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
+  const paging = toLimitOffsetSql(query);
+  const where = ["1 = 1"];
+  const params = { viewerId: viewer.id || 0 };
+
+  if (query.search) {
+    where.push("file_name LIKE :search");
+    params.search = `%${query.search}%`;
+  }
+
+  if (query.folderType) {
+    where.push("visibility = :folderType");
+    params.folderType = query.folderType;
+  }
+
+  if (query.uploadCategory) {
+    where.push("upload_category = :uploadCategory");
+    params.uploadCategory = query.uploadCategory;
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT lf.id, NULL AS caseId, 'General Library' AS caseName, 'general' AS sourceType,
+        lf.visibility AS folderType, lf.upload_category AS uploadCategory,
+        NULL AS uploadCategoryOtherLabel, lf.file_name AS fileName,
+        lf.file_url AS fileUrl, lf.mime_type AS mimeType, lf.file_size AS fileSize,
+        lf.storage_provider AS storageProvider, lf.storage_path AS cloudinaryPublicId,
+        lf.uploaded_by AS uploadedBy,
+        u.name AS uploadedByName, lf.created_at AS createdAt, COALESCE(lf.updated_at, lf.created_at) AS updatedAt,
+        CASE WHEN :viewerRole IN ('admin', 'assistant') OR lf.uploaded_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
+      FROM admin_library_files lf
+      LEFT JOIN users u ON u.id = lf.uploaded_by
+      WHERE ${where.join(" AND ")}
+      ORDER BY lf.created_at DESC, lf.id DESC
+      ${paging.sql}
+    `,
+    { ...params, viewerRole: viewer.role || "" },
+  );
+
+  const [countRows] = await pool.execute(
+    `SELECT COUNT(*) AS total FROM admin_library_files WHERE ${where.join(" AND ")}`,
+    params,
+  );
+
+  return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+export const getAdminLibraryFileById = async (fileId, viewer = {}) => {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, uploaded_by AS uploadedBy, visibility AS folderType, upload_category AS uploadCategory,
+        NULL AS uploadCategoryOtherLabel, file_name AS fileName, file_url AS fileUrl,
+        mime_type AS mimeType, file_size AS fileSize, storage_provider AS storageProvider,
+        storage_path AS cloudinaryPublicId, created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt,
+        CASE WHEN :viewerRole IN ('admin', 'assistant') OR uploaded_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
+      FROM admin_library_files
+      WHERE id = :fileId AND (visibility = 'public' OR uploaded_by = :viewerId OR :viewerRole IN ('admin', 'assistant'))
+      LIMIT 1
+    `,
+    { fileId, viewerId: viewer.id || 0, viewerRole: viewer.role || "" },
+  );
+
+  const file = rows[0] || null;
+  return file ? { ...file, fileName: cleanUploadDisplayName(file.fileName) } : null;
+};
+
+export const updateAdminLibraryFileName = async (fileId, fileName, viewer = {}) => {
+  const existing = await getAdminLibraryFileById(fileId, viewer);
+  if (!existing || !existing.canManage) return null;
+
+  const cleanName = cleanUploadDisplayName(fileName);
+  if (!cleanName || cleanName.length < 2) {
+    throw new Error("File name must be at least 2 characters");
+  }
+
+  await pool.execute(
+    `
+      UPDATE admin_library_files
+      SET file_name = :fileName, updated_at = CURRENT_TIMESTAMP
+      WHERE id = :fileId
+    `,
+    { fileId, fileName: cleanName },
+  );
+
+  return getAdminLibraryFileById(fileId, viewer);
+};
+
+export const deleteAdminLibraryFile = async (fileId, viewer = {}) => {
+  const existing = await getAdminLibraryFileById(fileId, viewer);
+  if (!existing || !existing.canManage) return null;
+
+  await pool.execute(`DELETE FROM admin_library_files WHERE id = :fileId`, { fileId });
+  return existing;
+};
+
 export const createCaseFile = async (caseId, payload, userId, connection = pool) => {
   const fileUrl = payload.fileUrl || payload.cloudinarySecureUrl || null;
 
@@ -286,11 +735,11 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
   const [result] = await connection.execute(
     `
       INSERT INTO case_files (
-        case_id, uploaded_by, folder_type, file_name, file_url, mime_type, file_size, storage_provider,
+        case_id, uploaded_by, folder_type, upload_category, file_name, file_url, mime_type, file_size, storage_provider,
         cloudinary_public_id, cloudinary_resource_type, cloudinary_secure_url, cloudinary_version
       )
       VALUES (
-        :caseId, :userId, :folderType, :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider,
+        :caseId, :userId, :folderType, :uploadCategory, :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider,
         :cloudinaryPublicId, :cloudinaryResourceType, :cloudinarySecureUrl, :cloudinaryVersion
       )
     `,
@@ -298,6 +747,7 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
       caseId,
       userId: userId || null,
       folderType: payload.folderType || "private",
+      uploadCategory: payload.uploadCategory || "photos_documents",
       fileName: cleanUploadDisplayName(payload.fileName),
       fileUrl,
       mimeType: payload.mimeType || null,
@@ -316,7 +766,7 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
 export const getCaseFileById = async (caseId, fileId) => {
   const [rows] = await pool.execute(
     `
-      SELECT id, case_id AS caseId, folder_type AS folderType, file_name AS fileName,
+      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory, file_name AS fileName,
         file_url AS fileUrl, mime_type AS mimeType, file_size AS fileSize,
         storage_provider AS storageProvider, uploaded_by AS uploadedBy,
         cloudinary_public_id AS cloudinaryPublicId, cloudinary_resource_type AS cloudinaryResourceType,
@@ -333,11 +783,38 @@ export const getCaseFileById = async (caseId, fileId) => {
   return file ? { ...file, fileName: cleanUploadDisplayName(file.fileName) } : null;
 };
 
+export const getCaseFileByFileId = async (fileId) => {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory, file_name AS fileName,
+        file_url AS fileUrl, mime_type AS mimeType, file_size AS fileSize,
+        storage_provider AS storageProvider, uploaded_by AS uploadedBy,
+        cloudinary_public_id AS cloudinaryPublicId, cloudinary_resource_type AS cloudinaryResourceType,
+        cloudinary_secure_url AS cloudinarySecureUrl, cloudinary_version AS cloudinaryVersion,
+        created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt
+      FROM case_files
+      WHERE id = :fileId
+      LIMIT 1
+    `,
+    { fileId },
+  );
+
+  const file = rows[0] || null;
+  return file ? { ...file, fileName: cleanUploadDisplayName(file.fileName) } : null;
+};
+
 export const deleteCaseFile = async (caseId, fileId) => {
   await pool.execute(
     `DELETE FROM case_files WHERE id = :fileId AND case_id = :caseId`,
     { caseId, fileId }
   );
+};
+
+export const deleteCaseFileByFileId = async (fileId) => {
+  const existing = await getCaseFileByFileId(fileId);
+  if (!existing) return null;
+  await pool.execute(`DELETE FROM case_files WHERE id = :fileId`, { fileId });
+  return existing;
 };
 
 export const updateCaseFileName = async (caseId, fileId, fileName) => {
@@ -356,6 +833,24 @@ export const updateCaseFileName = async (caseId, fileId, fileName) => {
   );
 
   return getCaseFileById(caseId, fileId);
+};
+
+export const updateCaseFileNameByFileId = async (fileId, fileName) => {
+  const cleanName = cleanUploadDisplayName(fileName);
+  if (!cleanName || cleanName.length < 2) {
+    throw new Error("File name must be at least 2 characters");
+  }
+
+  await pool.execute(
+    `
+      UPDATE case_files
+      SET file_name = :fileName, updated_at = CURRENT_TIMESTAMP
+      WHERE id = :fileId
+    `,
+    { fileId, fileName: cleanName },
+  );
+
+  return getCaseFileByFileId(fileId);
 };
 
 export const listOrders = async (query) => {
@@ -438,7 +933,7 @@ export const createOrder = async (payload) => {
   const price = payload.price === "" ? null : payload.price ?? payload.amount ?? null;
   const title = payload.title || patientName;
 
-  await pool.execute(
+  const [result] = await pool.execute(
     `
       INSERT INTO case_orders (
         case_id, user_id, patient_name, target_id, title, status, amount, price,
@@ -476,6 +971,7 @@ export const createOrder = async (payload) => {
       dueDate: payload.dueDate || null,
     },
   );
+  return result.insertId;
 };
 
 export const updateOrder = async (id, payload) => {
@@ -533,6 +1029,7 @@ export const updateOrder = async (id, payload) => {
       dueDate: payload.dueDate || null,
     },
   );
+  return id;
 };
 
 export const archiveOrder = async (id) => {

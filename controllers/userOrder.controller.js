@@ -1,4 +1,4 @@
-import { listCustomFields } from "../repositories/caseExtra.repository.js";
+import { listCaseFilesGlobal, listCaseNotesGlobal, listCustomFields } from "../repositories/caseExtra.repository.js";
 import {
   createNotification,
   listAdminAssistantNotificationRecipients,
@@ -44,6 +44,16 @@ export const downloadFile = async (req, res) => {
 export const settings = async (_req, res) => {
   const customFields = await listCustomFields();
   sendSuccess(res, { data: { customFields } });
+};
+
+export const files = async (req, res) => {
+  const result = await listCaseFilesGlobal(req.validatedQuery || req.query, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta });
+};
+
+export const notes = async (req, res) => {
+  const result = await listCaseNotesGlobal(req.validatedQuery || req.query, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta });
 };
 
 const parseMultipartOrderPayload = (req) => {

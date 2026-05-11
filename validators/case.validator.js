@@ -25,6 +25,10 @@ const optionalHexColor = z
   .or(z.literal(""));
 
 const optionalOtherText = z.string().trim().max(255).optional().nullable().or(z.literal(""));
+const referenceLinkSchema = z.object({
+  label: z.string().trim().max(160).optional().nullable().or(z.literal("")),
+  url: z.string().trim().url().max(1000),
+});
 
 const workflowFieldsSchema = {
   implantSystem: z.enum(IMPLANT_SYSTEM_OPTIONS).optional().nullable().or(z.literal("")),
@@ -95,6 +99,9 @@ export const casePayloadSchema = z.object({
   templateId: optionalId,
   teamMemberIds: optionalIdArray,
   customFieldValues: z.record(z.string(), z.any()).optional().default({}),
+  fileCategories: z.array(z.enum(["dicom", "stl", "photos_documents", "general"])).optional().default([]),
+  referenceLinks: z.array(referenceLinkSchema).optional().default([]),
+  links: z.array(referenceLinkSchema).optional().default([]),
   ...workflowFieldsSchema,
 }).superRefine(validateWorkflowOtherFields);
 

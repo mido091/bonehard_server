@@ -28,10 +28,10 @@ export const getUserOrderDashboardAnalytics = async (userId) => {
     pool.execute(
       `
         SELECT
-          COUNT(*) AS totalOrders,
-          SUM(CASE WHEN DATE(c.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 13 DAY) THEN 1 ELSE 0 END) AS submitted14d,
-          SUM(CASE WHEN c.target_time IS NOT NULL AND c.target_time <> '' THEN 1 ELSE 0 END) AS withTargetTime,
-          SUM(CASE WHEN c.contact_phone IS NOT NULL AND c.contact_phone <> '' AND c.contact_email IS NOT NULL AND c.contact_email <> '' THEN 1 ELSE 0 END) AS completeContact,
+          COUNT(DISTINCT c.id) AS totalOrders,
+          COUNT(DISTINCT CASE WHEN DATE(c.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 13 DAY) THEN c.id END) AS submitted14d,
+          COUNT(DISTINCT CASE WHEN c.target_time IS NOT NULL AND c.target_time <> '' THEN c.id END) AS withTargetTime,
+          COUNT(DISTINCT CASE WHEN c.contact_phone IS NOT NULL AND c.contact_phone <> '' AND c.contact_email IS NOT NULL AND c.contact_email <> '' THEN c.id END) AS completeContact,
           MAX(c.created_at) AS latestSubmittedAt,
           COUNT(DISTINCT CASE WHEN cf.id IS NOT NULL THEN c.id END) AS withFiles,
           COUNT(cf.id) AS totalFiles

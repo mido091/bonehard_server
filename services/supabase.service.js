@@ -11,6 +11,8 @@
  *   SUPABASE_SECRET_KEY  – The secret (service_role) key — sb_secret_...
  */
 
+import { createReadStream } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { createClient } from "@supabase/supabase-js";
 import { env } from "../config/env.js";
 import { cleanUploadDisplayName } from "../utils/fileValidation.js";
@@ -117,11 +119,14 @@ export const uploadFileToSupabase = async (caseId, file) => {
   const storedFileName = originalName;
   const storagePath    = `cases/${caseId}/${safeName}_${timestamp}${ext}`;
 
-  console.log("[Supabase] Uploading:", { path: storagePath, size: file.buffer.length, type: file.mimetype });
+  const fileBody = file.buffer || (file.path ? createReadStream(file.path) : null);
+  if (!fileBody) throw new Error("[Supabase] Upload failed: file body is missing");
+
+  console.log("[Supabase] Uploading:", { path: storagePath, size: file.size || file.buffer?.length || 0, type: file.mimetype });
 
   const { error: uploadError } = await client.storage
     .from(BUCKET_NAME)
-    .upload(storagePath, file.buffer, {
+    .upload(storagePath, fileBody, {
       contentType:        file.mimetype,
       contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(storedFileName)}`,
       upsert:             false,
@@ -144,7 +149,7 @@ export const uploadFileToSupabase = async (caseId, file) => {
     fileUrl:           publicUrl,
     fileName:          storedFileName,
     mimeType:          file.mimetype,
-    fileSize:          file.buffer.length,
+    fileSize:          file.size || file.buffer?.length || 0,
     storageProvider:   "supabase",
     original_filename: originalName,
     stored_file_name:  storedFileName,
@@ -152,9 +157,18 @@ export const uploadFileToSupabase = async (caseId, file) => {
     public_id:         storagePath,
     secure_url:        publicUrl,
     resource_type:     null,
-    bytes:             file.buffer.length,
+    bytes:             file.size || file.buffer?.length || 0,
     version:           null,
   };
+};
+
+export const removeTempUploadFile = async (file) => {
+  if (!file?.path) return;
+  try {
+    await unlink(file.path);
+  } catch {
+    // Temp cleanup should not fail the user-facing request.
+  }
 };
 
 /**

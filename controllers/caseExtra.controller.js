@@ -9,6 +9,8 @@ import {
   createCaseGenerator,
   createCaseFile,
   createCaseGeneralNote,
+  createAdminLibraryFile,
+  createAdminLibraryNote,
   createCaseNote,
   createCaseNotesExport,
   createCasePhase,
@@ -20,6 +22,8 @@ import {
   createTemplate,
   createTemplateTask,
   deleteCaseFile,
+  deleteAdminLibraryFile,
+  deleteAdminLibraryNote,
   deleteProduct,
   deleteSector,
   deleteCasePhase,
@@ -28,9 +32,16 @@ import {
   deleteTemplateTask,
   getOrderById,
   getCaseFileById,
+  getCaseFileByFileId,
+  getCaseGeneralNoteById,
+  getAdminLibraryFileById,
   listCaseFiles,
+  listCaseFilesGlobal,
   listCaseGenerators,
   listCaseGeneralNotes,
+  listCaseNotesGlobal,
+  listAdminLibraryFiles,
+  listAdminLibraryNotes,
   listCaseNotes,
   listCaseNotesExports,
   listCasePhases,
@@ -52,11 +63,20 @@ import {
   upsertCaseSystemSettings,
   updateCasePhase,
   updateCaseFileName,
+  updateCaseFileNameByFileId,
+  updateAdminLibraryFileName,
+  updateAdminLibraryNote,
+  updateCaseGeneralNote,
+  updateCaseGeneralNoteByNoteId,
+  deleteCaseGeneralNote,
+  deleteCaseGeneralNoteByNoteId,
+  deleteCaseFileByFileId,
+  replaceResourceLinks,
 } from "../repositories/caseExtra.repository.js";
 
 import { getCaseDetails, getCases } from "../services/case.service.js";
 import { CASE_UPLOAD_ROOT } from "../middlewares/caseFileUpload.middleware.js";
-import { uploadFileToSupabase, deleteSupabaseFile } from "../services/supabase.service.js";
+import { uploadFileToSupabase, deleteSupabaseFile, removeTempUploadFile } from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 
 const withDownloadFileName = (url, fileName) => {
@@ -87,9 +107,31 @@ export const generalNotes = async (req, res) => {
 
 export const createGeneralNote = async (req, res) => {
   await getCaseDetails(req.params.id);
-  await createCaseGeneralNote(req.params.id, req.validatedBody || req.body, req.user.id);
+  const payload = req.validatedBody || req.body;
+  const note = await createCaseGeneralNote(req.params.id, payload, req.user.id);
+  await replaceResourceLinks("case_note", note.id, payload.referenceLinks || payload.links || [], req.user.id, { caseId: Number(req.params.id) });
   const result = await listCaseGeneralNotes(req.params.id, { page: 1, perPage: 20 });
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "General note created", status: 201 });
+};
+
+export const updateGeneralNote = async (req, res) => {
+  await getCaseDetails(req.params.id);
+  const note = await getCaseGeneralNoteById(req.params.id, req.params.noteId);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const payload = req.validatedBody || req.body;
+  await updateCaseGeneralNote(req.params.id, req.params.noteId, payload, req.user.id);
+  await replaceResourceLinks("case_note", Number(req.params.noteId), payload.referenceLinks || payload.links || [], req.user.id, { caseId: Number(req.params.id) });
+  const result = await listCaseGeneralNotes(req.params.id, { page: 1, perPage: 20 });
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "Note updated" });
+};
+
+export const removeGeneralNote = async (req, res) => {
+  await getCaseDetails(req.params.id);
+  const deleted = await deleteCaseGeneralNote(req.params.id, req.params.noteId);
+  if (!deleted) throw new ApiError(404, "Note not found");
+
+  sendSuccess(res, { message: "Note deleted" });
 };
 
 export const timers = async (req, res) => {
@@ -126,15 +168,25 @@ export const uploadFiles = async (req, res) => {
     throw new ApiError(422, "Select at least one file to upload");
   }
 
-  const uploadPromises = req.files.map(async (file) => {
+  const categories = (() => {
+    try {
+      return JSON.parse(req.body.fileCategories || "[]");
+    } catch {
+      return [];
+    }
+  })();
+
+  const uploadPromises = req.files.map(async (file, index) => {
     const uploadResult = await uploadFileToSupabase(caseId, file);
+    await removeTempUploadFile(file);
 
     return createCaseFile(caseId, {
       folderType:              "private",
+      uploadCategory:          categories[index] || "photos_documents",
       fileName:                uploadResult.fileName,
       fileUrl:                 uploadResult.fileUrl,
       mimeType:                file.mimetype,
-      fileSize:                file.buffer.length,
+      fileSize:                file.size || file.buffer?.length || 0,
       storageProvider:         "supabase",
       cloudinaryPublicId:      uploadResult.supabasePath || null,
       cloudinaryResourceType:  null,
@@ -147,6 +199,211 @@ export const uploadFiles = async (req, res) => {
 
   const result = await listCaseFiles(caseId, { page: 1, perPage: 20 });
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "Files uploaded", status: 201 });
+};
+
+export const globalFiles = async (req, res) => {
+  const [caseFiles, libraryFiles] = await Promise.all([
+    listCaseFilesGlobal(req.validatedQuery || req.query, req.user),
+    listAdminLibraryFiles(req.validatedQuery || req.query, req.user),
+  ]);
+
+  sendSuccess(res, {
+    data: [...libraryFiles.rows, ...caseFiles.rows],
+    meta: { ...caseFiles.meta, total: caseFiles.meta.total + libraryFiles.meta.total },
+  });
+};
+
+export const uploadGeneralFile = async (req, res) => {
+  if (!req.files?.length) throw new ApiError(422, "Select at least one file to upload");
+  const visibility = req.body.visibility === "public" ? "public" : "private";
+  const allowedCategories = new Set(["dicom", "stl", "photos_documents", "general", "other"]);
+  const uploadCategory = allowedCategories.has(req.body.uploadCategory) ? req.body.uploadCategory : "general";
+  const uploadCategoryOtherLabel = String(req.body.uploadCategoryOtherLabel || "").trim().slice(0, 120);
+  if (uploadCategory === "other" && uploadCategoryOtherLabel.length < 2) {
+    throw new ApiError(422, "Custom category name is required when category is Other");
+  }
+  const uploaded = [];
+  for (const file of req.files) {
+    const uploadResult = await uploadFileToSupabase(`general/${req.user.id}`, file);
+    await removeTempUploadFile(file);
+    await createAdminLibraryFile({
+      visibility,
+      uploadCategory,
+      uploadCategoryOtherLabel,
+      fileName: uploadResult.fileName,
+      fileUrl: uploadResult.fileUrl,
+      mimeType: file.mimetype,
+      fileSize: file.size || file.buffer?.length || 0,
+      storageProvider: "supabase",
+      storagePath: uploadResult.supabasePath,
+    }, req.user.id);
+    uploaded.push(uploadResult);
+  }
+  const result = await listAdminLibraryFiles({ page: 1, perPage: 20 }, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: `${uploaded.length} file(s) uploaded`, status: 201 });
+};
+
+export const downloadGeneralFile = async (req, res) => {
+  const file = await getAdminLibraryFileById(Number(req.params.fileId), req.user);
+  if (!file) throw new ApiError(404, "File not found");
+
+  let url = file.fileUrl;
+  if (!url) throw new ApiError(404, "File not found");
+  if (file.storageProvider === "supabase") {
+    url = withDownloadFileName(url, file.fileName);
+  }
+
+  return res.redirect(url);
+};
+
+export const renameGeneralFile = async (req, res) => {
+  const file = await updateAdminLibraryFileName(
+    Number(req.params.fileId),
+    (req.validatedBody || req.body).fileName,
+    req.user,
+  );
+  if (!file) throw new ApiError(404, "File not found");
+
+  const result = await listAdminLibraryFiles({ page: 1, perPage: 20 }, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "File renamed" });
+};
+
+export const removeGeneralFile = async (req, res) => {
+  const file = await deleteAdminLibraryFile(Number(req.params.fileId), req.user);
+  if (!file) throw new ApiError(404, "File not found");
+
+  if (file.storageProvider === "supabase" && file.cloudinaryPublicId) {
+    await deleteSupabaseFile(file.cloudinaryPublicId);
+  }
+
+  sendSuccess(res, { message: "File deleted" });
+};
+
+export const globalNotes = async (req, res) => {
+  const [caseNotes, libraryNotes] = await Promise.all([
+    listCaseNotesGlobal(req.validatedQuery || req.query, req.user),
+    listAdminLibraryNotes(req.validatedQuery || req.query, req.user),
+  ]);
+
+  sendSuccess(res, {
+    data: [...libraryNotes.rows, ...caseNotes.rows],
+    meta: { ...caseNotes.meta, total: caseNotes.meta.total + libraryNotes.meta.total },
+  });
+};
+
+export const createGeneralLibraryNote = async (req, res) => {
+  const payload = req.validatedBody || req.body;
+  const noteId = await createAdminLibraryNote(payload, req.user.id);
+  await replaceResourceLinks("admin_library_note", noteId, payload.referenceLinks || payload.links || [], req.user.id);
+  const result = await listAdminLibraryNotes({ page: 1, perPage: 20 }, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "General note created", status: 201 });
+};
+
+export const updateGeneralLibraryNote = async (req, res) => {
+  const payload = req.validatedBody || req.body;
+  const note = await updateAdminLibraryNote(Number(req.params.noteId), payload, req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+  await replaceResourceLinks("admin_library_note", Number(req.params.noteId), payload.referenceLinks || payload.links || [], req.user.id);
+
+  const result = await listAdminLibraryNotes({ page: 1, perPage: 20 }, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "Note updated" });
+};
+
+export const removeGeneralLibraryNote = async (req, res) => {
+  const note = await deleteAdminLibraryNote(Number(req.params.noteId), req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  sendSuccess(res, { message: "Note deleted" });
+};
+
+const streamOrRedirectCaseFile = async (file, res) => {
+  if (["supabase", "firebase", "cloudinary"].includes(file.storageProvider)) {
+    let url = file.fileUrl || file.cloudinarySecureUrl;
+    if (!url) throw new ApiError(404, "File not found");
+    if (file.storageProvider === "supabase") url = withDownloadFileName(url, file.fileName);
+    return res.redirect(url);
+  }
+
+  const relativePath = file.cloudinaryPublicId || file.fileUrl;
+  if (!relativePath) throw new ApiError(404, "File not found");
+
+  const { join } = await import("node:path");
+  let resolvedPath = join(CASE_UPLOAD_ROOT, relativePath);
+  if (!existsSync(resolvedPath)) {
+    resolvedPath = path.resolve(CASE_UPLOAD_ROOT, file.fileUrl || "");
+    if (!resolvedPath.startsWith(CASE_UPLOAD_ROOT) || !existsSync(resolvedPath)) {
+      throw new ApiError(404, "File not found on disk");
+    }
+  }
+
+  res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
+  res.setHeader("Content-Length", file.fileSize || 0);
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
+  return createReadStream(resolvedPath).pipe(res);
+};
+
+const removeFileFromStorage = async (file) => {
+  if (file.storageProvider === "supabase" && file.cloudinaryPublicId) {
+    await deleteSupabaseFile(file.cloudinaryPublicId);
+  } else if (file.storageProvider === "firebase" && file.cloudinaryPublicId) {
+    try {
+      const { deleteFirebaseFile } = await import("../services/firebase.service.js");
+      await deleteFirebaseFile(file.cloudinaryPublicId);
+    } catch (e) {
+      console.warn("Could not load firebase.service to delete legacy firebase file", e.message);
+    }
+  } else if (["local", null, "external"].includes(file.storageProvider) && file.cloudinaryPublicId) {
+    try {
+      const { deleteLocalFile } = await import("../services/localStorage.service.js");
+      await deleteLocalFile(file.cloudinaryPublicId);
+    } catch (e) {
+      console.warn("Could not load localStorage.service to delete legacy local file", e.message);
+    }
+  }
+
+  if (file.storageProvider === "local" && file.fileUrl && !file.cloudinaryPublicId) {
+    const resolvedPath = path.resolve(CASE_UPLOAD_ROOT, file.fileUrl);
+    if (resolvedPath.startsWith(CASE_UPLOAD_ROOT) && existsSync(resolvedPath)) {
+      try { unlinkSync(resolvedPath); } catch (err) {
+        console.error("Failed to delete legacy local file:", err);
+      }
+    }
+  }
+};
+
+export const downloadFileById = async (req, res) => {
+  const file = await getCaseFileByFileId(Number(req.params.fileId));
+  if (!file) throw new ApiError(404, "File not found");
+  return streamOrRedirectCaseFile(file, res);
+};
+
+export const renameFileById = async (req, res) => {
+  const existing = await getCaseFileByFileId(Number(req.params.fileId));
+  if (!existing) throw new ApiError(404, "File not found");
+  const file = await updateCaseFileNameByFileId(Number(req.params.fileId), (req.validatedBody || req.body).fileName);
+  sendSuccess(res, { data: file, message: "File renamed" });
+};
+
+export const removeFileById = async (req, res) => {
+  const existing = await getCaseFileByFileId(Number(req.params.fileId));
+  if (!existing) throw new ApiError(404, "File not found");
+  const file = await deleteCaseFileByFileId(Number(req.params.fileId));
+  await removeFileFromStorage(file);
+  sendSuccess(res, { message: "File deleted" });
+};
+
+export const updateGeneralNoteById = async (req, res) => {
+  const payload = req.validatedBody || req.body;
+  const note = await updateCaseGeneralNoteByNoteId(Number(req.params.noteId), payload, req.user.id);
+  if (!note) throw new ApiError(404, "Note not found");
+  await replaceResourceLinks("case_note", Number(req.params.noteId), payload.referenceLinks || payload.links || [], req.user.id, { caseId: Number(note.caseId) });
+  sendSuccess(res, { data: note, message: "Note updated" });
+};
+
+export const removeGeneralNoteById = async (req, res) => {
+  const note = await deleteCaseGeneralNoteByNoteId(Number(req.params.noteId));
+  if (!note) throw new ApiError(404, "Note not found");
+  sendSuccess(res, { message: "Note deleted" });
 };
 
 export const downloadFile = async (req, res) => {
@@ -176,7 +433,7 @@ export const downloadFile = async (req, res) => {
 
   // Try uploads root first, then legacy CASE_UPLOAD_ROOT
   const { join } = await import("node:path");
-  let resolvedPath = join(UPLOADS_ROOT, relativePath);
+  let resolvedPath = join(CASE_UPLOAD_ROOT, relativePath);
 
   if (!existsSync(resolvedPath)) {
     // Fallback: legacy local path
@@ -252,13 +509,18 @@ export const orders = async (req, res) => {
 };
 
 export const createOrderRecord = async (req, res) => {
-  await createOrder(req.validatedBody || req.body);
+  const payload = req.validatedBody || req.body;
+  const orderId = await createOrder(payload);
+  await replaceResourceLinks("order", orderId, payload.referenceLinks || payload.links || [], req.user?.id);
   const result = await listOrders({ page: 1, perPage: 20 });
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "Order created", status: 201 });
 };
 
 export const updateOrderRecord = async (req, res) => {
-  await updateOrder(req.params.orderId, req.validatedBody || req.body);
+  const payload = req.validatedBody || req.body;
+  const orderId = req.params.orderId;
+  await updateOrder(orderId, payload);
+  await replaceResourceLinks("order", orderId, payload.referenceLinks || payload.links || [], req.user?.id);
   const result = await listOrders({ page: 1, perPage: 20 });
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "Order updated" });
 };

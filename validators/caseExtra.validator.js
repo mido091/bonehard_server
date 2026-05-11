@@ -11,6 +11,10 @@ const optionalDate = z
 const optionalMoney = z.coerce.number().min(0).max(9999999999).optional().nullable().or(z.literal(""));
 const optionalId = z.coerce.number().int().positive().optional().nullable();
 const optionalUid = z.string().trim().max(120).optional().nullable().or(z.literal(""));
+const referenceLinkSchema = z.object({
+  label: z.string().trim().max(160).optional().nullable().or(z.literal("")),
+  url: z.string().trim().url().max(1000),
+});
 
 export const idParamSchema = z.object({
   id: z.coerce.number().int().positive(),
@@ -44,6 +48,7 @@ export const listQuerySchema = z.object({
   perPage: z.coerce.number().int().positive().max(100).default(20),
   search: z.string().trim().max(190).optional().default(""),
   folderType: z.enum(["private", "public", "tasks"]).optional(),
+  uploadCategory: z.enum(["dicom", "stl", "photos_documents", "general", "other"]).optional(),
   status: z.enum(["running", "stopped", "pending", "exported", "failed", "open", "converted", "closed", "new", "quoted", "approved", "in-progress", "completed", "cancelled"]).optional(),
   targetId: z.coerce.number().int().positive().optional(),
   clientId: z.coerce.number().int().positive().optional(),
@@ -66,6 +71,10 @@ export const generalNotePayloadSchema = z.object({
   title: z.string().trim().min(2).max(190),
   content: z.string().trim().max(200000).optional().nullable(),
   isPrivate: z.coerce.boolean().optional().default(false),
+  visibility: z.enum(["private", "public"]).optional(),
+  noteType: z.string().trim().max(80).optional().default("General"),
+  referenceLinks: z.array(referenceLinkSchema).optional().default([]),
+  links: z.array(referenceLinkSchema).optional().default([]),
 });
 
 export const timerPayloadSchema = z.object({
@@ -122,6 +131,8 @@ export const orderPayloadSchema = z.object({
   implantType: z.string().trim().max(120).optional().nullable().or(z.literal("")),
   numberOfImplants: z.coerce.number().int().min(0).max(64).optional().nullable().or(z.literal("")),
   dueDate: optionalDate,
+  referenceLinks: z.array(referenceLinkSchema).optional().default([]),
+  links: z.array(referenceLinkSchema).optional().default([]),
 });
 
 export const templatePayloadSchema = z.object({

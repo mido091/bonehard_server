@@ -32,6 +32,10 @@ export const userOrderListQuerySchema = z.object({
 });
 
 const optionalOtherText = z.string().trim().max(255).optional().nullable().or(z.literal(""));
+const referenceLinkSchema = z.object({
+  label: z.string().trim().max(160).optional().nullable().or(z.literal("")),
+  url: z.string().trim().url().max(1000),
+});
 
 const validateWorkflowOtherFields = (payload, ctx) => {
   if (payload.implantSystem !== "Other" && payload.implantSystemOther) {
@@ -58,8 +62,11 @@ export const userOrderPayloadSchema = z.object({
   targetTime: z.string().trim().max(40).optional().nullable().or(z.literal('')),
   clientDescription: z.string().trim().max(100000).optional().nullable(),
   customFieldValues: z.record(z.string(), z.any()).optional().default({}),
+  fileCategories: z.array(z.enum(["dicom", "stl", "photos_documents", "general"])).optional().default([]),
   implantSystem: z.enum(IMPLANT_SYSTEM_OPTIONS).optional().nullable().or(z.literal("")),
   implantSystemOther: optionalOtherText,
   servicesNeeded: z.array(z.enum(SERVICES_NEEDED_OPTIONS)).optional().default([]),
   servicesNeededOther: optionalOtherText,
+  referenceLinks: z.array(referenceLinkSchema).optional().default([]),
+  links: z.array(referenceLinkSchema).optional().default([]),
 }).superRefine(validateWorkflowOtherFields);

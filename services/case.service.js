@@ -20,6 +20,8 @@ import {
   getCustomFieldValues,
   listCaseGeneralNotes,
   listCaseFiles,
+  listResourceLinks,
+  replaceResourceLinks,
   replaceCaseTeamMembers,
   updateCaseFileName,
   updateCaseGeneralNote,
@@ -28,7 +30,7 @@ import {
 import { getOfficialStatusByName, statusExists } from "../repositories/status.repository.js";
 import { DEFAULT_CASE_STATUS_NAME } from "../constants/workflowOptions.js";
 import { createTask, deleteTask, listTasksByCase, listTasksGlobal, replaceTaskWatchers, updateTask } from "../repositories/task.repository.js";
-import { uploadFileToSupabase, deleteSupabaseFile, deleteCaseFolder, moveSupabaseFileToCase } from "./supabase.service.js";
+import { uploadFileToSupabase, deleteSupabaseFile, deleteCaseFolder, moveSupabaseFileToCase, removeTempUploadFile } from "./supabase.service.js";
 import { notifyUser } from "./notification.service.js";
 
 import { ApiError } from "../utils/apiResponse.js";
@@ -92,6 +94,7 @@ const ensureUserOrderExists = async (id, userId) => {
 export const getUserOrderDetails = async (id, userId) => {
   const item = await ensureUserOrderExists(id, userId);
   item.customFieldValues = await getCustomFieldValues(id);
+  item.links = await listResourceLinks("case", id, { caseId: id });
   // Users only see public files (folder_type = 'public')
   const filesResult = await listCaseFiles(id, { page: 1, perPage: 100, folderType: 'public' });
   item.files = filesResult.rows;
@@ -106,6 +109,7 @@ export const getUserOrderDetails = async (id, userId) => {
 export const getAdminUserOrderDetails = async (id) => {
   const item = await ensureAdminUserOrderExists(id);
   item.customFieldValues = await getCustomFieldValues(id);
+  item.links = await listResourceLinks("case", id, { caseId: id });
   // Admins see ALL files (no folder_type filter)
   const filesResult = await listCaseFiles(id, { page: 1, perPage: 100 });
   item.files = filesResult.rows;
@@ -159,6 +163,7 @@ export const getUserOrderPublicNotes = async (id, userId, query) => {
 export const createAdminUserOrderNote = async (id, payload, userId) => {
   const order = await ensureAdminUserOrderExists(id);
   const note = await createCaseGeneralNote(id, payload, userId);
+  await replaceResourceLinks("case_note", note.id, payload.referenceLinks || payload.links || [], userId, { caseId: id });
 
   // If the note is public, notify the customer
   if (!payload.isPrivate && order.targetId) {
@@ -180,6 +185,7 @@ export const updateAdminUserOrderNote = async (orderId, noteId, payload, userId)
   const note = await getCaseGeneralNoteById(orderId, noteId);
   if (!note) throw new ApiError(404, 'Note not found');
   await updateCaseGeneralNote(orderId, noteId, payload, userId);
+  await replaceResourceLinks("case_note", noteId, payload.referenceLinks || payload.links || [], userId, { caseId: orderId });
   return getAdminUserOrderNotes(orderId, { page: 1, perPage: 50 });
 };
 
@@ -289,6 +295,7 @@ export const getCaseDetails = async (id) => {
   // Attach custom field values so the Edit form can pre-fill them
   item.customFieldValues = await getCustomFieldValues(id);
   item.teamMemberIds = await getCaseTeamMemberIds(id);
+  item.links = await listResourceLinks("case", id, { caseId: id });
   return item;
 };
 
@@ -311,6 +318,8 @@ export const createCaseRecord = async (payload, userId) => {
       await replaceCaseTeamMembers(newId, payload.teamMemberIds, connection);
     }
 
+    await replaceResourceLinks("case", newId, payload.referenceLinks || payload.links || [], userId, { caseId: newId }, connection);
+
     if (payload.templateId) {
       await applyTemplateToCase(newId, payload.templateId, connection);
       await refreshCaseProgress(newId, connection);
@@ -323,8 +332,20 @@ export const createCaseRecord = async (payload, userId) => {
 /**
  * Maps a Multer file + Supabase upload result into the shape expected by the case_files table.
  */
-const toCaseFilePayload = (multerFile, uploadResult) => ({
-  folderType:              "private",
+const parseFileCategories = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const toCaseFilePayload = (multerFile, uploadResult, uploadCategory = "photos_documents", folderType = "private") => ({
+  folderType,
+  uploadCategory,
   fileName:                uploadResult.fileName || multerFile.originalname,
   fileUrl:                 uploadResult.fileUrl,
   mimeType:                multerFile.mimetype,
@@ -343,9 +364,8 @@ const toCaseFilePayload = (multerFile, uploadResult) => ({
 const uploadFilesForCase = async (caseId, files = []) => {
   if (!files.length) return [];
   
-  const results = await Promise.allSettled(
-    files.map(file => uploadFileToSupabase(caseId, file))
-  );
+  const results = await Promise.allSettled(files.map(file => uploadFileToSupabase(caseId, file)));
+  await Promise.allSettled(files.map((file) => removeTempUploadFile(file)));
 
   const uploaded = results
     .filter(r => r.status === "fulfilled")
@@ -369,6 +389,7 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
 
   // 1. Upload files BEFORE the transaction so we don't hold a DB connection open
   const uploadedFiles = await uploadFilesForCase(`pending-${Date.now()}`, files);
+  const fileCategories = parseFileCategories(payload.fileCategories);
   let cleanupPaths = uploadedFiles.map((u) => u.supabasePath);
 
   try {
@@ -384,6 +405,8 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
         await replaceCaseTeamMembers(newId, payload.teamMemberIds, connection);
       }
 
+      await replaceResourceLinks("case", newId, payload.referenceLinks || payload.links || [], userId, { caseId: newId }, connection);
+
       if (payload.templateId) {
         await applyTemplateToCase(newId, payload.templateId, connection);
         await refreshCaseProgress(newId, connection);
@@ -397,7 +420,12 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
         );
         uploadedFiles[i] = { ...uploadedFiles[i], ...moved };
         cleanupPaths[i] = uploadedFiles[i].supabasePath;
-        await createCaseFile(newId, toCaseFilePayload(files[i], uploadedFiles[i]), userId, connection);
+        await createCaseFile(
+          newId,
+          toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i], options.allowUserOrder ? "public" : "private"),
+          userId,
+          connection,
+        );
       }
     });
 
@@ -439,6 +467,7 @@ export const createUserOrderRecordWithFiles = async (payload, userId, files = []
     templateId: null,
     teamMemberIds: [],
     customFieldValues: payload.customFieldValues || {},
+    referenceLinks: payload.referenceLinks || payload.links || [],
   };
 
   return createCaseRecordWithFiles(orderPayload, userId, files, { allowUserOrder: true });
@@ -473,10 +502,12 @@ export const updateUserOrderRecordWithFiles = async (id, payload, userId, files 
     implantSystemOther:       payload.implantSystem === "Other" ? payload.implantSystemOther || null : null,
     servicesNeeded:           payload.servicesNeeded || [],
     servicesNeededOther:      (payload.servicesNeeded || []).includes("Other") ? payload.servicesNeededOther || null : null,
+    referenceLinks:           payload.referenceLinks || payload.links || [],
   };
 
   // 1. Upload new files to Supabase before touching the DB
   const uploadedFiles = await uploadFilesForCase(id, files);
+  const fileCategories = parseFileCategories(payload.fileCategories);
 
   try {
     await withTransaction(async (connection) => {
@@ -486,8 +517,10 @@ export const updateUserOrderRecordWithFiles = async (id, payload, userId, files 
         await upsertCustomFieldValues(id, payload.customFieldValues, connection);
       }
 
+      await replaceResourceLinks("case", id, payload.referenceLinks || payload.links || [], userId, { caseId: id }, connection);
+
       for (let i = 0; i < uploadedFiles.length; i++) {
-        await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i]), userId, connection);
+        await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i], "public"), userId, connection);
       }
     });
 
@@ -518,6 +551,8 @@ export const updateCaseRecord = async (id, payload) => {
     if (payload.teamMemberIds) {
       await replaceCaseTeamMembers(id, payload.teamMemberIds, connection);
     }
+
+    await replaceResourceLinks("case", id, payload.referenceLinks || payload.links || [], null, { caseId: id }, connection);
   });
 
   return getCaseDetails(id);
@@ -529,6 +564,7 @@ export const updateCaseRecordWithFiles = async (id, payload, userId, files = [])
 
   // 1. Upload new files to Cloudinary before touching the DB
   const uploadedFiles = await uploadFilesForCase(id, files);
+  const fileCategories = parseFileCategories(payload.fileCategories);
 
   try {
     await withTransaction(async (connection) => {
@@ -542,8 +578,10 @@ export const updateCaseRecordWithFiles = async (id, payload, userId, files = [])
         await replaceCaseTeamMembers(id, payload.teamMemberIds, connection);
       }
 
+      await replaceResourceLinks("case", id, payload.referenceLinks || payload.links || [], userId, { caseId: id }, connection);
+
       for (let i = 0; i < uploadedFiles.length; i++) {
-        await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i]), userId, connection);
+        await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i]), userId, connection);
       }
     });
 
