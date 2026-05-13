@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import multer from "multer";
 import { ApiError } from "../utils/apiResponse.js";
 import { validateUploadedFiles } from "../utils/fileValidation.js";
@@ -12,7 +13,11 @@ import {
   MAX_CASE_FILE_SIZE_MB,
 } from "../constants/uploadOptions.js";
 
-export const CASE_UPLOAD_ROOT = path.resolve(process.cwd(), "uploads", "cases");
+const defaultUploadRoot = process.env.VERCEL
+  ? path.join(tmpdir(), "bonehard", "cases")
+  : path.resolve(process.cwd(), "uploads", "cases");
+
+export const CASE_UPLOAD_ROOT = process.env.CASE_UPLOAD_ROOT || defaultUploadRoot;
 mkdirSync(CASE_UPLOAD_ROOT, { recursive: true });
 
 const ALLOWED_MIME_TYPES = new Set(CASE_ALLOWED_UPLOAD_MIME_TYPES);
