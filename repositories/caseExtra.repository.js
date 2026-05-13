@@ -523,6 +523,7 @@ export const listCaseFiles = async (caseId, query) => {
   const [rows] = await pool.execute(
     `
       SELECT f.id, f.folder_type AS folderType, f.upload_category AS uploadCategory,
+        f.upload_category_other_label AS uploadCategoryOtherLabel,
         f.file_name AS fileName, f.file_url AS fileUrl, f.mime_type AS mimeType,
         f.file_size AS fileSize, f.storage_provider AS storageProvider, f.uploaded_by AS uploadedBy,
         f.cloudinary_public_id AS cloudinaryPublicId, f.cloudinary_resource_type AS cloudinaryResourceType,
@@ -551,7 +552,7 @@ export const listCaseFilesGlobal = async (query = {}, viewer = {}) => {
   const params = {};
 
   if (query.search) {
-    where.push("(f.file_name LIKE :search OR c.name LIKE :search)");
+    where.push("(f.file_name LIKE :search OR c.name LIKE :search OR f.upload_category_other_label LIKE :search)");
     params.search = `%${query.search}%`;
   }
 
@@ -575,7 +576,7 @@ export const listCaseFilesGlobal = async (query = {}, viewer = {}) => {
       SELECT f.id, f.case_id AS caseId, c.name AS caseName,
         CASE WHEN c.target_id IS NOT NULL AND c.created_by = c.target_id AND creator.role = 'user' THEN 'order' ELSE 'case' END AS sourceType,
         f.folder_type AS folderType, f.upload_category AS uploadCategory,
-        NULL AS uploadCategoryOtherLabel,
+        f.upload_category_other_label AS uploadCategoryOtherLabel,
         f.file_name AS fileName, f.file_url AS fileUrl, f.mime_type AS mimeType, f.file_size AS fileSize,
         f.storage_provider AS storageProvider, f.cloudinary_public_id AS cloudinaryPublicId,
         u.name AS uploadedByName, f.created_at AS createdAt, COALESCE(f.updated_at, f.created_at) AS updatedAt,
@@ -609,16 +610,21 @@ export const createAdminLibraryFile = async (payload, userId, connection = pool)
   const [result] = await connection.execute(
     `
       INSERT INTO admin_library_files (
-        uploaded_by, visibility, upload_category, file_name, file_url, mime_type, file_size, storage_provider, storage_path
+        uploaded_by, visibility, upload_category, upload_category_other_label,
+        file_name, file_url, mime_type, file_size, storage_provider, storage_path
       )
       VALUES (
-        :userId, :visibility, :uploadCategory, :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider, :storagePath
+        :userId, :visibility, :uploadCategory, :uploadCategoryOtherLabel,
+        :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider, :storagePath
       )
     `,
     {
       userId: userId || null,
       visibility: payload.visibility === "public" ? "public" : "private",
-      uploadCategory: payload.uploadCategory === "other" ? "general" : payload.uploadCategory || "general",
+      uploadCategory: payload.uploadCategory || "general",
+      uploadCategoryOtherLabel: payload.uploadCategory === "other"
+        ? String(payload.uploadCategoryOtherLabel || "").trim().slice(0, 120)
+        : null,
       fileName: cleanUploadDisplayName(payload.fileName),
       fileUrl: payload.fileUrl,
       mimeType: payload.mimeType || null,
@@ -636,7 +642,7 @@ export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
   const params = { viewerId: viewer.id || 0 };
 
   if (query.search) {
-    where.push("file_name LIKE :search");
+    where.push("(file_name LIKE :search OR upload_category_other_label LIKE :search)");
     params.search = `%${query.search}%`;
   }
 
@@ -654,7 +660,7 @@ export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
     `
       SELECT lf.id, NULL AS caseId, 'General Library' AS caseName, 'general' AS sourceType,
         lf.visibility AS folderType, lf.upload_category AS uploadCategory,
-        NULL AS uploadCategoryOtherLabel, lf.file_name AS fileName,
+        lf.upload_category_other_label AS uploadCategoryOtherLabel, lf.file_name AS fileName,
         lf.file_url AS fileUrl, lf.mime_type AS mimeType, lf.file_size AS fileSize,
         lf.storage_provider AS storageProvider, lf.storage_path AS cloudinaryPublicId,
         lf.uploaded_by AS uploadedBy,
@@ -681,7 +687,7 @@ export const getAdminLibraryFileById = async (fileId, viewer = {}) => {
   const [rows] = await pool.execute(
     `
       SELECT id, uploaded_by AS uploadedBy, visibility AS folderType, upload_category AS uploadCategory,
-        NULL AS uploadCategoryOtherLabel, file_name AS fileName, file_url AS fileUrl,
+        upload_category_other_label AS uploadCategoryOtherLabel, file_name AS fileName, file_url AS fileUrl,
         mime_type AS mimeType, file_size AS fileSize, storage_provider AS storageProvider,
         storage_path AS cloudinaryPublicId, created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt,
         CASE WHEN :viewerRole IN ('admin', 'assistant') OR uploaded_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
@@ -735,11 +741,13 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
   const [result] = await connection.execute(
     `
       INSERT INTO case_files (
-        case_id, uploaded_by, folder_type, upload_category, file_name, file_url, mime_type, file_size, storage_provider,
+        case_id, uploaded_by, folder_type, upload_category, upload_category_other_label,
+        file_name, file_url, mime_type, file_size, storage_provider,
         cloudinary_public_id, cloudinary_resource_type, cloudinary_secure_url, cloudinary_version
       )
       VALUES (
-        :caseId, :userId, :folderType, :uploadCategory, :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider,
+        :caseId, :userId, :folderType, :uploadCategory, :uploadCategoryOtherLabel,
+        :fileName, :fileUrl, :mimeType, :fileSize, :storageProvider,
         :cloudinaryPublicId, :cloudinaryResourceType, :cloudinarySecureUrl, :cloudinaryVersion
       )
     `,
@@ -748,6 +756,9 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
       userId: userId || null,
       folderType: payload.folderType || "private",
       uploadCategory: payload.uploadCategory || "photos_documents",
+      uploadCategoryOtherLabel: payload.uploadCategory === "other"
+        ? String(payload.uploadCategoryOtherLabel || "").trim().slice(0, 120)
+        : null,
       fileName: cleanUploadDisplayName(payload.fileName),
       fileUrl,
       mimeType: payload.mimeType || null,
@@ -766,7 +777,8 @@ export const createCaseFile = async (caseId, payload, userId, connection = pool)
 export const getCaseFileById = async (caseId, fileId) => {
   const [rows] = await pool.execute(
     `
-      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory, file_name AS fileName,
+      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory,
+        upload_category_other_label AS uploadCategoryOtherLabel, file_name AS fileName,
         file_url AS fileUrl, mime_type AS mimeType, file_size AS fileSize,
         storage_provider AS storageProvider, uploaded_by AS uploadedBy,
         cloudinary_public_id AS cloudinaryPublicId, cloudinary_resource_type AS cloudinaryResourceType,
@@ -786,7 +798,8 @@ export const getCaseFileById = async (caseId, fileId) => {
 export const getCaseFileByFileId = async (fileId) => {
   const [rows] = await pool.execute(
     `
-      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory, file_name AS fileName,
+      SELECT id, case_id AS caseId, folder_type AS folderType, upload_category AS uploadCategory,
+        upload_category_other_label AS uploadCategoryOtherLabel, file_name AS fileName,
         file_url AS fileUrl, mime_type AS mimeType, file_size AS fileSize,
         storage_provider AS storageProvider, uploaded_by AS uploadedBy,
         cloudinary_public_id AS cloudinaryPublicId, cloudinary_resource_type AS cloudinaryResourceType,
