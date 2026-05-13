@@ -267,7 +267,7 @@ export const listAdminLibraryNotes = async (query = {}, viewer = {}) => {
   const params = { viewerId: viewer.id || 0 };
 
   if (query.search) {
-    where.push("(title LIKE :search OR content LIKE :search)");
+    where.push("(title LIKE :search OR content LIKE :search OR note_type LIKE :search)");
     params.search = `%${query.search}%`;
   }
 
