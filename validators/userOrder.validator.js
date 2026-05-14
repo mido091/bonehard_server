@@ -37,6 +37,14 @@ const referenceLinkSchema = z.object({
   url: z.string().trim().url().max(1000),
 });
 
+const uploadedFileSchema = z.object({
+  storagePath: z.string().trim().min(8).max(1000).regex(/^cases\//),
+  fileName: z.string().trim().min(1).max(190),
+  mimeType: z.string().trim().max(190).optional().nullable().or(z.literal("")),
+  fileSize: z.coerce.number().int().min(0).max(1024 * 1024 * 1024),
+  uploadCategory: z.enum(["dicom", "stl", "photos_documents", "general"]).optional().default("photos_documents"),
+});
+
 const validateWorkflowOtherFields = (payload, ctx) => {
   if (payload.implantSystem !== "Other" && payload.implantSystemOther) {
     ctx.addIssue({
@@ -63,6 +71,7 @@ export const userOrderPayloadSchema = z.object({
   clientDescription: z.string().trim().max(100000).optional().nullable(),
   customFieldValues: z.record(z.string(), z.any()).optional().default({}),
   fileCategories: z.array(z.enum(["dicom", "stl", "photos_documents", "general"])).optional().default([]),
+  uploadedFiles: z.array(uploadedFileSchema).max(20).optional().default([]),
   implantSystem: z.enum(IMPLANT_SYSTEM_OPTIONS).optional().nullable().or(z.literal("")),
   implantSystemOther: optionalOtherText,
   servicesNeeded: z.array(z.enum(SERVICES_NEEDED_OPTIONS)).optional().default([]),

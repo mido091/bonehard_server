@@ -15,6 +15,7 @@ import {
   myTasks,
   remove,
   removeTask,
+  signUpload,
   update,
   updateWithFiles,
   updateStatus,
@@ -129,6 +130,7 @@ router.get("/tasks/all", validate(taskListQuerySchema, "query"), asyncHandler(al
 router.get("/archive", validate(caseListQuerySchema, "query"), asyncHandler(archive));
 router.get("/timers", validate(listQuerySchema, "query"), asyncHandler(globalTimers));
 router.get("/files", validate(listQuerySchema, "query"), asyncHandler(globalFiles));
+router.post("/uploads/sign", uploadLimiter, asyncHandler(signUpload));
 router.post("/files/general", uploadLimiter, handleCaseFileUpload, asyncHandler(uploadGeneralFile));
 router.get("/files/general/:fileId/download", validate(z.object({ fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(downloadGeneralFile));
 router.patch("/files/general/:fileId", validate(z.object({ fileId: z.coerce.number().int().positive() }), "params"), validate(fileRenamePayloadSchema), asyncHandler(renameGeneralFile));

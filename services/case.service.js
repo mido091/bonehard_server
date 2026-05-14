@@ -343,6 +343,30 @@ const parseFileCategories = (value) => {
   }
 };
 
+const parseDirectUploadedFiles = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const assertDirectUploadsAreScoped = (files, scope) => {
+  files.forEach((file) => {
+    const path = String(file.storagePath || "");
+    const allowed = scope === "pending"
+      ? /^cases\/pending-[a-z0-9_-]+\//i.test(path)
+      : path.startsWith(`cases/${scope}/`);
+
+    if (!allowed) {
+      throw new ApiError(422, "Uploaded file does not belong to this save operation");
+    }
+  });
+};
+
 const toCaseFilePayload = (multerFile, uploadResult, uploadCategory = "photos_documents", folderType = "private") => ({
   folderType,
   uploadCategory,
@@ -355,6 +379,20 @@ const toCaseFilePayload = (multerFile, uploadResult, uploadCategory = "photos_do
   cloudinaryPublicId:      uploadResult.supabasePath || null,
   cloudinaryResourceType:  null,
   cloudinarySecureUrl:     uploadResult.secure_url || null,
+  cloudinaryVersion:       null,
+});
+
+const toDirectCaseFilePayload = (directFile, uploadResult, folderType = "private") => ({
+  folderType,
+  uploadCategory:          directFile.uploadCategory || "photos_documents",
+  fileName:                uploadResult.fileName || directFile.fileName,
+  fileUrl:                 uploadResult.fileUrl || uploadResult.supabasePath,
+  mimeType:                directFile.mimeType || "application/octet-stream",
+  fileSize:                uploadResult.fileSize || directFile.fileSize || 0,
+  storageProvider:         "supabase",
+  cloudinaryPublicId:      uploadResult.supabasePath || directFile.storagePath || null,
+  cloudinaryResourceType:  null,
+  cloudinarySecureUrl:     null,
   cloudinaryVersion:       null,
 });
 
@@ -389,8 +427,13 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
 
   // 1. Upload files BEFORE the transaction so we don't hold a DB connection open
   const uploadedFiles = await uploadFilesForCase(`pending-${Date.now()}`, files);
+  const directFiles = parseDirectUploadedFiles(payload.uploadedFiles);
+  assertDirectUploadsAreScoped(directFiles, "pending");
   const fileCategories = parseFileCategories(payload.fileCategories);
-  let cleanupPaths = uploadedFiles.map((u) => u.supabasePath);
+  let cleanupPaths = [
+    ...uploadedFiles.map((u) => u.supabasePath),
+    ...directFiles.map((u) => u.storagePath),
+  ];
 
   try {
     let newId;
@@ -423,6 +466,27 @@ export const createCaseRecordWithFiles = async (payload, userId, files = [], opt
         await createCaseFile(
           newId,
           toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i], options.allowUserOrder ? "public" : "private"),
+          userId,
+          connection,
+        );
+      }
+
+      for (let i = 0; i < directFiles.length; i++) {
+        const moved = await moveSupabaseFileToCase(
+          directFiles[i].storagePath,
+          newId,
+          directFiles[i].fileName,
+        );
+        const uploadResult = {
+          supabasePath: moved.supabasePath || directFiles[i].storagePath,
+          fileUrl: moved.fileUrl || moved.supabasePath || directFiles[i].storagePath,
+          fileName: directFiles[i].fileName,
+          fileSize: directFiles[i].fileSize,
+        };
+        cleanupPaths[uploadedFiles.length + i] = uploadResult.supabasePath;
+        await createCaseFile(
+          newId,
+          toDirectCaseFilePayload(directFiles[i], uploadResult, options.allowUserOrder ? "public" : "private"),
           userId,
           connection,
         );
@@ -468,6 +532,8 @@ export const createUserOrderRecordWithFiles = async (payload, userId, files = []
     teamMemberIds: [],
     customFieldValues: payload.customFieldValues || {},
     referenceLinks: payload.referenceLinks || payload.links || [],
+    uploadedFiles: payload.uploadedFiles || [],
+    fileCategories: payload.fileCategories || [],
   };
 
   return createCaseRecordWithFiles(orderPayload, userId, files, { allowUserOrder: true });
@@ -507,6 +573,8 @@ export const updateUserOrderRecordWithFiles = async (id, payload, userId, files 
 
   // 1. Upload new files to Supabase before touching the DB
   const uploadedFiles = await uploadFilesForCase(id, files);
+  const directFiles = parseDirectUploadedFiles(payload.uploadedFiles);
+  assertDirectUploadsAreScoped(directFiles, id);
   const fileCategories = parseFileCategories(payload.fileCategories);
 
   try {
@@ -522,13 +590,25 @@ export const updateUserOrderRecordWithFiles = async (id, payload, userId, files 
       for (let i = 0; i < uploadedFiles.length; i++) {
         await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i], "public"), userId, connection);
       }
+
+      for (let i = 0; i < directFiles.length; i++) {
+        const moved = await moveSupabaseFileToCase(directFiles[i].storagePath, id, directFiles[i].fileName);
+        const uploadResult = {
+          supabasePath: moved.supabasePath || directFiles[i].storagePath,
+          fileUrl: moved.fileUrl || moved.supabasePath || directFiles[i].storagePath,
+          fileName: directFiles[i].fileName,
+          fileSize: directFiles[i].fileSize,
+        };
+        await createCaseFile(id, toDirectCaseFilePayload(directFiles[i], uploadResult, "public"), userId, connection);
+      }
     });
 
     return getUserOrderDetails(id, userId);
   } catch (error) {
     // DB transaction failed — clean up orphaned Supabase files
     await Promise.allSettled(
-      uploadedFiles.map((u) => deleteSupabaseFile(u.supabasePath))
+      [...uploadedFiles.map((u) => u.supabasePath), ...directFiles.map((u) => u.storagePath)]
+        .map((storagePath) => deleteSupabaseFile(storagePath))
     );
     throw error;
   }
@@ -564,6 +644,8 @@ export const updateCaseRecordWithFiles = async (id, payload, userId, files = [])
 
   // 1. Upload new files to Cloudinary before touching the DB
   const uploadedFiles = await uploadFilesForCase(id, files);
+  const directFiles = parseDirectUploadedFiles(payload.uploadedFiles);
+  assertDirectUploadsAreScoped(directFiles, id);
   const fileCategories = parseFileCategories(payload.fileCategories);
 
   try {
@@ -583,13 +665,25 @@ export const updateCaseRecordWithFiles = async (id, payload, userId, files = [])
       for (let i = 0; i < uploadedFiles.length; i++) {
         await createCaseFile(id, toCaseFilePayload(files[i], uploadedFiles[i], fileCategories[i]), userId, connection);
       }
+
+      for (let i = 0; i < directFiles.length; i++) {
+        const moved = await moveSupabaseFileToCase(directFiles[i].storagePath, id, directFiles[i].fileName);
+        const uploadResult = {
+          supabasePath: moved.supabasePath || directFiles[i].storagePath,
+          fileUrl: moved.fileUrl || moved.supabasePath || directFiles[i].storagePath,
+          fileName: directFiles[i].fileName,
+          fileSize: directFiles[i].fileSize,
+        };
+        await createCaseFile(id, toDirectCaseFilePayload(directFiles[i], uploadResult), userId, connection);
+      }
     });
 
     return getCaseDetails(id);
   } catch (error) {
     // DB transaction failed — clean up orphaned Cloudinary files
     await Promise.allSettled(
-      uploadedFiles.map((u) => deleteSupabaseFile(u.supabasePath))
+      [...uploadedFiles.map((u) => u.supabasePath), ...directFiles.map((u) => u.storagePath)]
+        .map((storagePath) => deleteSupabaseFile(storagePath))
     );
     throw error;
   }

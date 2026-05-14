@@ -17,8 +17,42 @@ import {
 } from "../services/case.service.js";
 import { exportCasePackage } from "../services/exportPackage.service.js";
 import { exportCaseCsvPackage } from "../services/csvExport.service.js";
+import { createSupabaseSignedUploadTarget } from "../services/supabase.service.js";
+import {
+  CASE_ALLOWED_UPLOAD_EXTENSIONS,
+  CASE_ALLOWED_UPLOAD_HINT,
+  MAX_CASE_FILE_SIZE_BYTES,
+} from "../constants/uploadOptions.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
+import { safeOriginalName } from "../utils/fileValidation.js";
 import { casePayloadSchema } from "../validators/case.validator.js";
+
+const ALLOWED_EXTENSIONS = new Set(CASE_ALLOWED_UPLOAD_EXTENSIONS);
+
+const getUploadExtension = (fileName = "") => {
+  const match = String(fileName).toLowerCase().match(/\.[a-z0-9]+$/);
+  return match ? match[0] : "";
+};
+
+const validateSignedUploadRequest = (body = {}) => {
+  const fileName = safeOriginalName(body.fileName || "");
+  const extension = getUploadExtension(fileName);
+  const fileSize = Number(body.fileSize || 0);
+
+  if (!fileName || !ALLOWED_EXTENSIONS.has(extension)) {
+    throw new ApiError(415, CASE_ALLOWED_UPLOAD_HINT);
+  }
+  if (!Number.isFinite(fileSize) || fileSize < 0 || fileSize > MAX_CASE_FILE_SIZE_BYTES) {
+    throw new ApiError(413, "File size too large. Maximum is 1024MB per file.");
+  }
+
+  return {
+    fileName,
+    fileSize,
+    mimeType: String(body.mimeType || "application/octet-stream").slice(0, 190),
+    folderKey: body.folderKey || (body.caseId ? String(body.caseId) : undefined),
+  };
+};
 
 export const list = async (req, res) => {
   const result = await getCases(req.validatedQuery || req.query);
@@ -39,19 +73,34 @@ const parseMultipartCasePayload = (req) => {
   let rawPayload = req.body?.payload;
   if (Array.isArray(rawPayload)) rawPayload = rawPayload[0];
 
-  if (!rawPayload) throw new ApiError(422, "Case payload is required");
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawPayload);
-  } catch {
-    throw new ApiError(422, "Case payload must be valid JSON");
+  let parsed = req.body;
+  if (rawPayload) {
+    try {
+      parsed = JSON.parse(rawPayload);
+    } catch {
+      throw new ApiError(422, "Case payload must be valid JSON");
+    }
   }
+
+  if (!parsed || typeof parsed !== "object") throw new ApiError(422, "Case payload is required");
 
   const result = casePayloadSchema.safeParse(parsed);
   if (!result.success) throw new ApiError(422, "Validation failed", result.error.flatten());
 
   return result.data;
+};
+
+export const signUpload = async (req, res) => {
+  const input = validateSignedUploadRequest(req.body);
+  const target = await createSupabaseSignedUploadTarget(input);
+  sendSuccess(res, {
+    data: {
+      ...target,
+      fileSize: input.fileSize,
+    },
+    message: "Upload target created",
+    status: 201,
+  });
 };
 
 export const createWithFiles = async (req, res) => {

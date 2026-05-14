@@ -13,6 +13,7 @@
 
 import { createReadStream } from "node:fs";
 import { unlink } from "node:fs/promises";
+import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { env } from "../config/env.js";
 import { cleanUploadDisplayName } from "../utils/fileValidation.js";
@@ -67,6 +68,14 @@ const sanitizeName = (filename) => {
       .slice(0, 100) || "file"
   );
 };
+
+const sanitizeFolderKey = (value) => (
+  String(value || `pending-${Date.now()}`)
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90) || `pending-${Date.now()}`
+);
 
 // ── Bucket Bootstrap ───────────────────────────────────────────────────────────
 
@@ -160,6 +169,36 @@ export const uploadFileToSupabase = async (caseId, file) => {
     resource_type:     null,
     bytes:             file.size || file.buffer?.length || 0,
     version:           null,
+  };
+};
+
+export const createSupabaseSignedUploadTarget = async ({
+  folderKey,
+  fileName,
+  mimeType,
+  upsert = false,
+}) => {
+  const client = getClient();
+  await ensureBucket(client);
+
+  const originalName = cleanUploadDisplayName(fileName);
+  const ext = getExt(originalName);
+  const safeName = sanitizeName(originalName);
+  const unique = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+  const storagePath = `cases/${sanitizeFolderKey(folderKey)}/${safeName}_${makeTimestamp()}_${unique}${ext}`;
+
+  const { data, error } = await client.storage
+    .from(BUCKET_NAME)
+    .createSignedUploadUrl(storagePath, { upsert });
+
+  if (error) throw new Error(`[Supabase] Signed upload URL failed: ${error.message}`);
+
+  return {
+    signedUrl: data.signedUrl,
+    token: data.token,
+    storagePath,
+    fileName: originalName,
+    mimeType: mimeType || "application/octet-stream",
   };
 };
 

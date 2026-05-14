@@ -46,6 +46,11 @@ const upload = multer({
 });
 
 export const handleCaseFileUpload = (req, res, next) => {
+  if (!req.is("multipart/form-data")) {
+    next();
+    return;
+  }
+
   upload.array("files", MAX_CASE_FILES_PER_REQUEST)(req, res, async (error) => {
     if (!error) {
       try {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createWithFiles, dashboard, deleteFile, detail, downloadFile, files, list, notes, renameFile, settings, updateWithFiles } from "../controllers/userOrder.controller.js";
+import { createWithFiles, dashboard, deleteFile, detail, downloadFile, files, list, notes, renameFile, settings, signUpload, updateWithFiles } from "../controllers/userOrder.controller.js";
 import { requireAuth, requireUserDashboard } from "../middlewares/auth.middleware.js";
 import { handleCaseFileUpload } from "../middlewares/caseFileUpload.middleware.js";
 import { uploadLimiter } from "../middlewares/rateLimit.middleware.js";
@@ -17,6 +17,7 @@ router.get("/dashboard", asyncHandler(dashboard));
 router.get("/settings", asyncHandler(settings));
 router.get("/files", validate(listQuerySchema, "query"), asyncHandler(files));
 router.get("/notes", validate(listQuerySchema, "query"), asyncHandler(notes));
+router.post("/uploads/sign", uploadLimiter, asyncHandler(signUpload));
 router.post("/with-files", uploadLimiter, handleCaseFileUpload, asyncHandler(createWithFiles));
 router.get("/:id/files/:fileId/download", validate(userOrderFileParamSchema, "params"), asyncHandler(downloadFile));
 router.patch("/:id/files/:fileId", validate(userOrderFileParamSchema, "params"), validate(userOrderFileRenameSchema), asyncHandler(renameFile));
