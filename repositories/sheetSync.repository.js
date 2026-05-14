@@ -1,5 +1,10 @@
 import { pool } from "../config/db.js";
-import { CASE_STATUS_NAMES } from "../constants/workflowOptions.js";
+import {
+  CASE_STATUS_NAMES,
+  CASE_STATUS_PROGRESS_MAP,
+  IMPLANT_SYSTEM_OPTIONS,
+  SERVICES_NEEDED_OPTIONS,
+} from "../constants/workflowOptions.js";
 
 const userOrderCondition = `
   c.target_id IS NOT NULL
@@ -40,6 +45,8 @@ export const listSheetSyncOptions = async () => {
 
   return {
     statuses: CASE_STATUS_NAMES,
+    implantSystems: IMPLANT_SYSTEM_OPTIONS,
+    servicesNeeded: SERVICES_NEEDED_OPTIONS,
     targetTimes: ["Same day", "24 hours", "48 hours", "72 hours", "1 week"],
     clients: clients.map((row) => row.label).filter(Boolean),
     leaders: leaders.map((row) => row.label).filter(Boolean),
@@ -47,6 +54,26 @@ export const listSheetSyncOptions = async () => {
 };
 
 const caseStatusDisplaySql = "COALESCE(s.name, '')";
+const sheetStatusProgressSql = `CASE s.name
+  ${Object.entries(CASE_STATUS_PROGRESS_MAP).map(([name, progress]) => `WHEN '${name.replace(/'/g, "''")}' THEN ${progress}`).join("\n  ")}
+  ELSE 0
+END`;
+
+const parseJsonArray = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+};
+
+const normalizeSheetCaseRows = (rows) => rows.map((row) => ({
+  ...row,
+  servicesNeeded: parseJsonArray(row.servicesNeededJson).join(", "),
+  servicesNeededJson: undefined,
+}));
 
 export const getSheetDashboardSummary = async () => {
   const [[summaryRows], [paymentRows]] = await Promise.all([
@@ -98,11 +125,16 @@ export const listDashboardCasesForSheet = async () => {
           WHEN leader.email IS NOT NULL AND leader.email <> '' THEN CONCAT(leader.name, ' <', leader.email, '>')
           ELSE leader.name
         END AS projectLeader,
+        c.contact_phone AS contactPhone,
+        c.contact_email AS contactEmail,
         c.target_time AS targetTime,
+        c.implant_system AS implantSystem,
+        c.implant_system_other AS implantSystemOther,
+        c.services_needed_json AS servicesNeededJson,
+        c.services_needed_other AS servicesNeededOther,
         c.description AS staffNotes,
         c.client_description AS clientNotes,
         DATE_FORMAT(c.start_date, '%Y-%m-%d') AS startDate,
-        DATE_FORMAT(c.estimated_completion_date, '%Y-%m-%d') AS dueDate,
         c.progress_percentage AS progress,
         DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i') AS createdAt,
         DATE_FORMAT(c.updated_at, '%Y-%m-%d %H:%i') AS updatedAt,
@@ -118,7 +150,7 @@ export const listDashboardCasesForSheet = async () => {
     `,
   );
 
-  return rows;
+  return normalizeSheetCaseRows(rows);
 };
 
 export const listDashboardOrdersForSheet = async () => {
@@ -133,6 +165,10 @@ export const listDashboardOrdersForSheet = async () => {
         c.contact_email AS contactEmail,
         COALESCE(s.name, '') AS status,
         c.target_time AS targetTime,
+        c.implant_system AS implantSystem,
+        c.implant_system_other AS implantSystemOther,
+        c.services_needed_json AS servicesNeededJson,
+        c.services_needed_other AS servicesNeededOther,
         DATE_FORMAT(c.start_date, '%Y-%m-%d') AS submittedDate,
         DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i') AS createdAt,
         DATE_FORMAT(c.updated_at, '%Y-%m-%d %H:%i') AS updatedAt,
@@ -147,7 +183,7 @@ export const listDashboardOrdersForSheet = async () => {
     `,
   );
 
-  return rows;
+  return normalizeSheetCaseRows(rows);
 };
 
 export const listDashboardPaymentsForSheet = async () => {
@@ -223,10 +259,13 @@ export const getCaseStatusByName = async (statusName) => {
       SELECT id, name
       FROM case_statuses
       WHERE LOWER(name) = LOWER(:statusName)
-        AND name IN ('New', 'In Progress', 'Completed')
+        AND name IN (${CASE_STATUS_NAMES.map((_, index) => `:status_${index}`).join(", ")})
       LIMIT 1
     `,
-    { statusName },
+    {
+      statusName,
+      ...Object.fromEntries(CASE_STATUS_NAMES.map((status, index) => [`status_${index}`, status])),
+    },
   );
 
   return rows[0] || null;
@@ -273,8 +312,7 @@ export const getDefaultSheetCaseStatus = async () => {
     `
       SELECT id, name
       FROM case_statuses
-      WHERE name IN ('New', 'In Progress', 'Completed')
-      ORDER BY CASE WHEN name = 'New' THEN 0 WHEN name = 'In Progress' THEN 1 ELSE 2 END
+      WHERE name = 'Order Received'
       LIMIT 1
     `,
   );
@@ -301,7 +339,13 @@ export const createCaseFromSheet = async ({
   statusId,
   clientId,
   projectLeaderId,
+  contactPhone,
+  contactEmail,
   targetTime,
+  implantSystem,
+  implantSystemOther,
+  servicesNeeded,
+  servicesNeededOther,
   staffNotes,
   clientNotes,
   startDate,
@@ -315,12 +359,19 @@ export const createCaseFromSheet = async ({
         status_id,
         target_id,
         project_leader_id,
+        contact_phone,
+        contact_email,
         target_time,
+        implant_system,
+        implant_system_other,
+        services_needed_json,
+        services_needed_other,
         description,
         client_description,
         start_date,
         estimated_completion_date,
         progress_tracking,
+        progress_percentage,
         created_by
       )
       VALUES (
@@ -328,12 +379,19 @@ export const createCaseFromSheet = async ({
         :statusId,
         :clientId,
         :projectLeaderId,
+        :contactPhone,
+        :contactEmail,
         :targetTime,
+        :implantSystem,
+        :implantSystemOther,
+        :servicesNeededJson,
+        :servicesNeededOther,
         :staffNotes,
         :clientNotes,
         :startDate,
         :dueDate,
         1,
+        (SELECT ${sheetStatusProgressSql} FROM case_statuses s WHERE s.id = :statusId LIMIT 1),
         :createdBy
       )
     `,
@@ -342,7 +400,13 @@ export const createCaseFromSheet = async ({
       statusId,
       clientId: clientId || null,
       projectLeaderId: projectLeaderId || null,
+      contactPhone: contactPhone || null,
+      contactEmail: contactEmail || null,
       targetTime: targetTime || null,
+      implantSystem: implantSystem || null,
+      implantSystemOther: implantSystem === "Other" ? implantSystemOther || null : null,
+      servicesNeededJson: JSON.stringify(servicesNeeded || []),
+      servicesNeededOther: (servicesNeeded || []).includes("Other") ? servicesNeededOther || null : null,
       staffNotes: staffNotes || null,
       clientNotes: clientNotes || null,
       startDate: startDate || null,
@@ -360,7 +424,13 @@ export const updateCaseFromSheet = async ({
   statusId,
   clientId,
   projectLeaderId,
+  contactPhone,
+  contactEmail,
   targetTime,
+  implantSystem,
+  implantSystemOther,
+  servicesNeeded,
+  servicesNeededOther,
   staffNotes,
   clientNotes,
   startDate,
@@ -376,6 +446,7 @@ export const updateCaseFromSheet = async ({
 
   if (statusId !== undefined) {
     fields.push("status_id = :statusId");
+    fields.push(`progress_percentage = (SELECT ${sheetStatusProgressSql} FROM case_statuses s WHERE s.id = :statusId LIMIT 1)`);
     params.statusId = statusId;
   }
 
@@ -389,9 +460,33 @@ export const updateCaseFromSheet = async ({
     params.projectLeaderId = projectLeaderId || null;
   }
 
+  if (contactPhone !== undefined) {
+    fields.push("contact_phone = :contactPhone");
+    params.contactPhone = contactPhone || null;
+  }
+
+  if (contactEmail !== undefined) {
+    fields.push("contact_email = :contactEmail");
+    params.contactEmail = contactEmail || null;
+  }
+
   if (targetTime !== undefined) {
     fields.push("target_time = :targetTime");
     params.targetTime = targetTime || null;
+  }
+
+  if (implantSystem !== undefined) {
+    fields.push("implant_system = :implantSystem");
+    fields.push("implant_system_other = :implantSystemOther");
+    params.implantSystem = implantSystem || null;
+    params.implantSystemOther = implantSystem === "Other" ? implantSystemOther || null : null;
+  }
+
+  if (servicesNeeded !== undefined) {
+    fields.push("services_needed_json = :servicesNeededJson");
+    fields.push("services_needed_other = :servicesNeededOther");
+    params.servicesNeededJson = JSON.stringify(servicesNeeded || []);
+    params.servicesNeededOther = (servicesNeeded || []).includes("Other") ? servicesNeededOther || null : null;
   }
 
   if (staffNotes !== undefined) {

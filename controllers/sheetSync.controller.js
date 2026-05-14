@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import {
+  IMPLANT_SYSTEM_OPTIONS,
+  SERVICES_NEEDED_OPTIONS,
+} from "../constants/workflowOptions.js";
+import {
   createCaseFromSheet,
   deleteCaseFromSheet,
   getCaseStatusByName,
@@ -32,6 +36,41 @@ const verifySheetsApiKey = (apiKey) => {
   if (!timingSafeStringEqual(apiKey, env.sheetsSyncApiKey)) {
     throw new ApiError(401, "Invalid Google Sheets sync API key");
   }
+};
+
+const parseSheetList = (value = "") => String(value || "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const normalizeSheetWorkflowFields = (payload) => {
+  const normalized = {
+    implantSystem: payload.implantSystem || null,
+    implantSystemOther: payload.implantSystemOther || null,
+    servicesNeeded: payload.servicesNeeded === undefined ? undefined : parseSheetList(payload.servicesNeeded),
+    servicesNeededOther: payload.servicesNeededOther || null,
+  };
+
+  if (normalized.implantSystem && !IMPLANT_SYSTEM_OPTIONS.includes(normalized.implantSystem)) {
+    throw new ApiError(422, "Selected implant system does not exist");
+  }
+
+  if (normalized.implantSystem !== "Other") {
+    normalized.implantSystemOther = null;
+  }
+
+  if (normalized.servicesNeeded !== undefined) {
+    const invalidService = normalized.servicesNeeded.find((service) => !SERVICES_NEEDED_OPTIONS.includes(service));
+    if (invalidService) {
+      throw new ApiError(422, `Selected service does not exist: ${invalidService}`);
+    }
+
+    if (!normalized.servicesNeeded.includes("Other")) {
+      normalized.servicesNeededOther = null;
+    }
+  }
+
+  return normalized;
 };
 
 export const syncToSheet = async (req, res) => {
@@ -126,12 +165,19 @@ export const syncFromSheet = async (req, res) => {
     }
 
     const createdBy = await getSheetCaseCreatorUserId();
+    const workflowFields = normalizeSheetWorkflowFields(payload);
     const createdCase = await createCaseFromSheet({
       patientName: payload.patientName,
       statusId: status.id,
       clientId,
       projectLeaderId,
+      contactPhone: payload.contactPhone,
+      contactEmail: payload.contactEmail,
       targetTime: payload.targetTime,
+      implantSystem: workflowFields.implantSystem,
+      implantSystemOther: workflowFields.implantSystemOther,
+      servicesNeeded: workflowFields.servicesNeeded || [],
+      servicesNeededOther: workflowFields.servicesNeededOther,
       staffNotes: payload.staffNotes,
       clientNotes: payload.clientNotes,
       startDate: payload.startDate,
@@ -184,13 +230,24 @@ export const syncFromSheet = async (req, res) => {
     }
   }
 
+  const workflowFields = normalizeSheetWorkflowFields(payload);
   const updatedCase = await updateCaseFromSheet({
     caseId: payload.caseId,
     patientName: payload.patientName,
     statusId,
     clientId,
     projectLeaderId,
+    contactPhone: payload.contactPhone,
+    contactEmail: payload.contactEmail,
     targetTime: payload.targetTime,
+    implantSystem: payload.implantSystem === undefined ? undefined : workflowFields.implantSystem,
+    implantSystemOther: payload.implantSystem === undefined && payload.implantSystemOther === undefined
+      ? undefined
+      : workflowFields.implantSystemOther,
+    servicesNeeded: payload.servicesNeeded === undefined ? undefined : workflowFields.servicesNeeded,
+    servicesNeededOther: payload.servicesNeeded === undefined && payload.servicesNeededOther === undefined
+      ? undefined
+      : workflowFields.servicesNeededOther,
     staffNotes: payload.staffNotes,
     clientNotes: payload.clientNotes,
     startDate: payload.startDate,
