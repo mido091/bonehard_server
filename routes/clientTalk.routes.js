@@ -19,6 +19,7 @@ import {
   getSession,
   listArchive,
   listMessages,
+  openOrderTalkAsStaff,
   requestTalk,
   sendMessage,
 } from "../controllers/clientTalk.controller.js";
@@ -107,6 +108,22 @@ clientTalkAdminRoutes.get(
   requireAdminOnly,
   validate(archiveQuerySchema, "query"),
   asyncHandler(listArchive),
+);
+
+clientTalkAdminRoutes.post(
+  "/user-orders/:id/client-talk/open",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema, "params"),
+  asyncHandler(openOrderTalkAsStaff),
+);
+
+clientTalkAdminRoutes.post(
+  "/cases/:id/client-talk/open",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema, "params"),
+  asyncHandler(openOrderTalkAsStaff),
 );
 
 clientTalkAdminRoutes.get(

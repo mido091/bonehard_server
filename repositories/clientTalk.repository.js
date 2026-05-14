@@ -7,8 +7,9 @@
  *  - A user can have at most one non-ended session per order (pending OR active).
  *    createOrReuseSession() enforces this — it returns the existing session if one
  *    is still open rather than creating a duplicate.
- *  - acceptSession() uses an atomic UPDATE with a WHERE guard (status='pending' AND
- *    assigned_to IS NULL) so two concurrent requests can never both succeed.
+ *  - New sessions are active immediately so users can send context before staff
+ *    joins. acceptSession() still uses an atomic UPDATE guard so two concurrent
+ *    claim attempts can never both own the same unassigned session.
  *  - Messages are stored in case_client_messages with a session_id FK so they are
  *    linked to the specific live session and the legacy case chat is unaffected.
  */
@@ -73,20 +74,77 @@ export const getOpenSessionByOrderForUser = async (orderId, userId) => {
 
 /**
  * Either returns the existing open session for this order/user, or creates
- * a fresh one with status='pending'. Prevents duplicate pending requests.
+ * a fresh active one. Prevents duplicate open conversations.
  */
 export const createOrReuseSession = async (orderId, userId) => {
   const existing = await getOpenSessionByOrderForUser(orderId, userId);
-  if (existing) return { ...existing, wasReusedOpenSession: true };
+  if (existing) {
+    if (existing.status === "pending") {
+      await pool.execute(
+        `UPDATE client_talk_sessions SET status = 'active' WHERE id = :sessionId`,
+        { sessionId: existing.id },
+      );
+      return { ...(await getSessionById(existing.id)), wasReusedOpenSession: true };
+    }
+    return { ...existing, wasReusedOpenSession: true };
+  }
 
   const [result] = await pool.execute(
     `INSERT INTO client_talk_sessions (order_id, user_id, status)
-     VALUES (:orderId, :userId, 'pending')`,
+     VALUES (:orderId, :userId, 'active')`,
     { orderId, userId },
   );
 
   const created = await getSessionById(result.insertId);
   return { ...created, wasReusedOpenSession: false };
+};
+
+export const createOrReuseSessionForStaff = async (orderId, assigneeId) => {
+  const [[orderRow]] = await pool.execute(
+    `SELECT id, target_id AS userId
+     FROM cases
+     WHERE id = :orderId
+       AND target_id IS NOT NULL
+     LIMIT 1`,
+    { orderId },
+  );
+  if (!orderRow) return null;
+
+  const existing = await getOpenSessionByOrderForUser(orderId, orderRow.userId);
+  if (existing) {
+    if (!existing.assignedTo) {
+      await pool.execute(
+        `UPDATE client_talk_sessions
+         SET status = 'active',
+             assigned_to = :assigneeId,
+             accepted_at = COALESCE(accepted_at, NOW())
+         WHERE id = :sessionId`,
+        { assigneeId, sessionId: existing.id },
+      );
+      return {
+        ...(await getSessionById(existing.id)),
+        wasReusedOpenSession: true,
+        wasAssignedByRequester: true,
+      };
+    }
+    return {
+      ...existing,
+      wasReusedOpenSession: true,
+      wasAssignedByRequester: Number(existing.assignedTo) === Number(assigneeId),
+    };
+  }
+
+  const [result] = await pool.execute(
+    `INSERT INTO client_talk_sessions (order_id, user_id, assigned_to, status, accepted_at)
+     VALUES (:orderId, :userId, :assigneeId, 'active', NOW())`,
+    { orderId, userId: orderRow.userId, assigneeId },
+  );
+
+  return {
+    ...(await getSessionById(result.insertId)),
+    wasReusedOpenSession: false,
+    wasAssignedByRequester: true,
+  };
 };
 
 /**
@@ -102,7 +160,7 @@ export const acceptSession = async (sessionId, assigneeId) => {
          assigned_to = :assigneeId,
          accepted_at = NOW()
      WHERE id          = :sessionId
-       AND status      = 'pending'
+       AND status      IN ('pending', 'active')
        AND assigned_to IS NULL`,
     { sessionId, assigneeId },
   );
@@ -138,7 +196,7 @@ export const endSession = async (sessionId, endedBy) => {
          ended_by = :endedBy,
          ended_at = NOW()
      WHERE id     = :sessionId
-       AND status = 'active'`,
+       AND status IN ('pending', 'active')`,
     { sessionId, endedBy },
   );
 
@@ -430,7 +488,7 @@ export const dismissOtherSessionNotifications = async (sessionId, acceptedByUser
  */
 export const userCanAccessSession = async (sessionId, user) => {
   const [[row]] = await pool.execute(
-    `SELECT user_id AS userId, assigned_to AS assignedTo
+    `SELECT user_id AS userId, assigned_to AS assignedTo, status
      FROM client_talk_sessions
      WHERE id = :sessionId
      LIMIT 1`,
@@ -441,6 +499,7 @@ export const userCanAccessSession = async (sessionId, user) => {
 
   if (Number(row.userId) === Number(user.id)) return true;
   if (row.assignedTo && Number(row.assignedTo) === Number(user.id)) return true;
+  if (["admin", "assistant"].includes(user.role) && row.status === "active") return true;
 
   return false;
 };

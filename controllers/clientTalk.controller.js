@@ -11,6 +11,7 @@
 import {
   acceptSession,
   createOrReuseSession,
+  createOrReuseSessionForStaff,
   createSessionMessage,
   deleteArchiveSession,
   dismissOtherSessionNotifications,
@@ -55,9 +56,9 @@ export const requestTalk = async (req, res) => {
   // Create or reuse the pending/active session (idempotent)
   const session = await createOrReuseSession(orderId, userId);
 
-  // Only notify admins/assistants if this is a fresh pending session
-  // (avoids spam if user re-opens the modal on an already-pending session)
-  if (session.status === "pending" && !session.acceptedAt && !session.wasReusedOpenSession) {
+  // Notify staff only for the first open session. The session is active immediately
+  // so the client can send details before a team member joins.
+  if (session.status === "active" && !session.acceptedAt && !session.wasReusedOpenSession) {
     const recipients = await listAdminAssistantNotificationRecipients();
 
     await Promise.all(
@@ -73,7 +74,7 @@ export const requestTalk = async (req, res) => {
             userId,
             orderName: orderRow.name,
             userName: req.user.name,
-            sessionStatus: "pending",
+            sessionStatus: "active",
           },
         });
 
@@ -96,6 +97,41 @@ export const requestTalk = async (req, res) => {
   }
 
   sendSuccess(res, { data: session, status: 201 });
+};
+
+/**
+ * POST /api/admin/(user-orders|cases)/:id/client-talk/open
+ * Opens the active Client Talk session from a staff-owned order/case screen.
+ * If the client already started a session, this reuses it and assigns the
+ * current staff member when it is still unassigned.
+ */
+export const openOrderTalkAsStaff = async (req, res) => {
+  const orderId = Number(req.params.id);
+  const session = await createOrReuseSessionForStaff(orderId, req.user.id);
+
+  if (!session) {
+    throw new ApiError(404, "Order not found or is not linked to a user");
+  }
+
+  if (session.wasAssignedByRequester) {
+    await dismissOtherSessionNotifications(session.id, req.user.id);
+  }
+
+  await triggerRealtimeEvent(
+    `private-client-talk-session-${session.id}`,
+    "session.accepted",
+    {
+      sessionId: session.id,
+      assignedTo: session.assignedTo || req.user.id,
+      assignedName: session.assignedName || req.user.name,
+    },
+  );
+
+  sendSuccess(res, {
+    data: session,
+    status: session.wasReusedOpenSession ? 200 : 201,
+    message: "Conversation opened",
+  });
 };
 
 /**
@@ -159,14 +195,24 @@ export const sendMessage = async (req, res) => {
   const session   = await getSessionById(sessionId);
 
   if (!session) throw new ApiError(404, "Session not found");
-  if (session.status !== "active") {
+  if (!["pending", "active"].includes(session.status)) {
     throw new ApiError(400, "Cannot send messages — conversation is not active");
   }
 
-  // Participant check
+  if (session.status === "pending") {
+    await pool.execute(
+      `UPDATE client_talk_sessions SET status = 'active' WHERE id = :sessionId`,
+      { sessionId },
+    );
+    session.status = "active";
+  }
+
+  // Participant check. Internal team members may join an active order-linked
+  // conversation from admin case/order screens before explicit assignment.
   const isOwner    = Number(session.userId) === Number(req.user.id);
   const isAssigned = session.assignedTo && Number(session.assignedTo) === Number(req.user.id);
-  if (!isOwner && !isAssigned) {
+  const isInternal = ["admin", "assistant"].includes(req.user.role);
+  if (!isOwner && !isAssigned && !isInternal) {
     throw new ApiError(403, "You are not a participant of this conversation");
   }
 
@@ -179,6 +225,33 @@ export const sendMessage = async (req, res) => {
     "message.created",
     message,
   );
+
+  const senderIsClient = Number(session.userId) === Number(req.user.id);
+  const recipientId = senderIsClient ? session.assignedTo : session.userId;
+
+  if (recipientId && Number(recipientId) !== Number(req.user.id)) {
+    const notification = await createNotification({
+      userId: recipientId,
+      type: "client_talk_message",
+      title: "New Client Talk Message",
+      body: `${req.user.name || "Team"}: ${body.trim().slice(0, 140)}`,
+      data: {
+        sessionId,
+        orderId: session.orderId,
+        orderName: session.orderName,
+        userId: session.userId,
+        userName: session.userName,
+        assignedTo: session.assignedTo,
+        assignedName: session.assignedName,
+      },
+    });
+
+    await triggerRealtimeEvent(
+      `private-user-${recipientId}`,
+      "notification.created",
+      notification,
+    );
+  }
 
   sendSuccess(res, { data: message, status: 201 });
 };
@@ -253,14 +326,16 @@ export const endSessionHandler = async (req, res) => {
   const session   = await getSessionById(sessionId);
 
   if (!session) throw new ApiError(404, "Session not found");
-  if (session.status !== "active") {
+  if (!["pending", "active"].includes(session.status)) {
     throw new ApiError(400, "This conversation is not active");
   }
 
-  // Participant check — only the two active parties may end it
+  // Participant check: the client, assigned staff, or an internal team member
+  // who opened the case/order thread may close an active conversation.
   const isOwner    = Number(session.userId) === Number(req.user.id);
   const isAssigned = session.assignedTo && Number(session.assignedTo) === Number(req.user.id);
-  if (!isOwner && !isAssigned) {
+  const isInternal = ["admin", "assistant"].includes(req.user.role);
+  if (!isOwner && !isAssigned && !isInternal) {
     throw new ApiError(403, "You are not a participant of this conversation");
   }
 
