@@ -1,6 +1,7 @@
 import { pool } from "../config/db.js";
 import { CASE_STATUS_PROGRESS_MAP } from "../constants/workflowOptions.js";
 import { toLimitOffsetSql } from "../utils/db.js";
+import { sanitizeRichText } from "../utils/sanitizeRichText.js";
 
 const sortMap = {
   name: "c.name",
@@ -276,8 +277,8 @@ export const createCase = async (data, userId, connection = pool) => {
     `,
     {
       ...data,
-      description: data.description || null,
-      clientDescription: data.clientDescription || null,
+      description: sanitizeRichText(data.description),
+      clientDescription: sanitizeRichText(data.clientDescription),
       targetId: data.targetId || null,
       secondaryClientId: data.secondaryClientId || null,
       projectLeaderId: data.projectLeaderId || null,
@@ -334,8 +335,8 @@ export const updateCase = async (id, data, connection = pool) => {
     {
       ...data,
       id,
-      description: data.description || null,
-      clientDescription: data.clientDescription || null,
+      description: sanitizeRichText(data.description),
+      clientDescription: sanitizeRichText(data.clientDescription),
       targetId: data.targetId || null,
       secondaryClientId: data.secondaryClientId || null,
       projectLeaderId: data.projectLeaderId || null,

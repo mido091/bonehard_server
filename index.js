@@ -16,6 +16,11 @@ import userRoutes from "./routes/user.routes.js";
 import storageRoutes from "./routes/storage.routes.js";
 import siteSettingsRoutes from "./routes/siteSettings.routes.js";
 import sheetSyncRoutes from "./routes/sheetSync.routes.js";
+import {
+  clientTalkAdminRoutes,
+  clientTalkSharedRoutes,
+  clientTalkUserRoutes,
+} from "./routes/clientTalk.routes.js";
 import { csrfProtection } from "./middlewares/csrf.middleware.js";
 import { apiLimiter } from "./middlewares/rateLimit.middleware.js";
 import { errorHandler, notFoundHandler } from "./middlewares/error.middleware.js";
@@ -113,6 +118,9 @@ app.use("/api/user/orders", userOrderRoutes);
 app.use("/api/storage", storageRoutes);
 app.use("/api", sheetSyncRoutes);
 app.use("/api", siteSettingsRoutes);
+app.use("/api", clientTalkUserRoutes);
+app.use("/api", clientTalkSharedRoutes);
+app.use("/api/admin", clientTalkAdminRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

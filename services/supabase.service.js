@@ -86,10 +86,17 @@ const ensureBucket = (client) => {
 
       if (!exists) {
         const { error: createError } = await client.storage.createBucket(BUCKET_NAME, {
-          public: true, // Public bucket — download URLs need no auth token
+          public: false,
         });
         if (createError) throw new Error(`[Supabase] Cannot create bucket: ${createError.message}`);
         console.log(`[Supabase] Bucket "${BUCKET_NAME}" created`);
+      } else {
+        const { error: updateError } = await client.storage.updateBucket(BUCKET_NAME, {
+          public: false,
+        });
+        if (updateError) {
+          console.warn(`[Supabase] Could not enforce private bucket "${BUCKET_NAME}": ${updateError.message}`);
+        }
       }
     })();
   }
@@ -136,17 +143,11 @@ export const uploadFileToSupabase = async (caseId, file) => {
     throw new Error(`[Supabase] Upload failed: ${uploadError.message}`);
   }
 
-  // Get the permanent public URL with the 'download' flag
-  // This appends ?download= to the URL so the browser forces a download instead of displaying it inline.
-  const { data: { publicUrl } } = client.storage
-    .from(BUCKET_NAME)
-    .getPublicUrl(storagePath, { download: storedFileName });
-
-  console.log("[Supabase] Upload success:", { storagePath, publicUrl });
+  console.log("[Supabase] Upload success:", { storagePath });
 
   return {
     supabasePath:      storagePath,
-    fileUrl:           publicUrl,
+    fileUrl:           storagePath,
     fileName:          storedFileName,
     mimeType:          file.mimetype,
     fileSize:          file.size || file.buffer?.length || 0,
@@ -155,7 +156,7 @@ export const uploadFileToSupabase = async (caseId, file) => {
     stored_file_name:  storedFileName,
     // Backward-compat fields
     public_id:         storagePath,
-    secure_url:        publicUrl,
+    secure_url:        null,
     resource_type:     null,
     bytes:             file.size || file.buffer?.length || 0,
     version:           null,
@@ -178,17 +179,58 @@ export const removeTempUploadFile = async (file) => {
  * @param {object} file - DB record with fileUrl.
  * @returns {string|null}
  */
-export const getSupabaseDownloadUrl = (file) => {
-  return file.fileUrl || file.cloudinarySecureUrl || null;
+export const extractSupabaseStoragePath = (value) => {
+  if (!value || typeof value !== "string") return null;
+  if (!/^https?:\/\//i.test(value)) return value.replace(/^\/+/, "");
+
+  try {
+    const url = new URL(value);
+    const publicMarker = `/storage/v1/object/public/${BUCKET_NAME}/`;
+    const signedMarker = `/storage/v1/object/sign/${BUCKET_NAME}/`;
+    const publicIndex = url.pathname.indexOf(publicMarker);
+    const signedIndex = url.pathname.indexOf(signedMarker);
+    const encodedPath = publicIndex >= 0
+      ? url.pathname.slice(publicIndex + publicMarker.length)
+      : signedIndex >= 0
+        ? url.pathname.slice(signedIndex + signedMarker.length)
+        : "";
+    return encodedPath ? decodeURIComponent(encodedPath) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const createSupabaseSignedDownloadUrl = async (storagePath, fileName, expiresIn = 300) => {
+  const cleanPath = extractSupabaseStoragePath(storagePath);
+  if (!cleanPath) return null;
+
+  const client = getClient();
+  await ensureBucket(client);
+  const { data, error } = await client.storage
+    .from(BUCKET_NAME)
+    .createSignedUrl(cleanPath, expiresIn, {
+      download: fileName || cleanPath.split("/").pop() || "attachment",
+    });
+
+  if (error) throw new Error(`[Supabase] Signed URL failed: ${error.message}`);
+  return data?.signedUrl || null;
+};
+
+export const getSupabaseDownloadUrl = async (file, expiresIn = 300) => {
+  const storagePath = file?.cloudinaryPublicId || file?.storagePath || extractSupabaseStoragePath(file?.fileUrl);
+  const signedUrl = await createSupabaseSignedDownloadUrl(storagePath, file?.fileName, expiresIn);
+  return signedUrl || file?.cloudinarySecureUrl || file?.fileUrl || null;
 };
 
 export const downloadSupabaseFile = async (storagePath) => {
-  if (!storagePath) return null;
+  const cleanPath = extractSupabaseStoragePath(storagePath);
+  if (!cleanPath) return null;
 
   const client = getClient();
+  await ensureBucket(client);
   const { data, error } = await client.storage
     .from(BUCKET_NAME)
-    .download(storagePath);
+    .download(cleanPath);
 
   if (error) {
     throw new Error(`[Supabase] Download failed: ${error.message}`);
@@ -204,18 +246,19 @@ export const downloadSupabaseFile = async (storagePath) => {
  * @param {string} storagePath - The path stored in DB (e.g. "cases/123/file.pdf").
  */
 export const deleteSupabaseFile = async (storagePath) => {
-  if (!storagePath) return;
+  const cleanPath = extractSupabaseStoragePath(storagePath);
+  if (!cleanPath) return;
   try {
     const client = getClient();
     const { error } = await client.storage
       .from(BUCKET_NAME)
-      .remove([storagePath]);
+      .remove([cleanPath]);
 
     if (error) throw error;
-    console.log("[Supabase] Deleted:", storagePath);
+    console.log("[Supabase] Deleted:", cleanPath);
   } catch (err) {
     // Don't throw — a failed delete should never crash the app
-    console.error("[Supabase] Delete failed:", storagePath, err.message);
+    console.error("[Supabase] Delete failed:", cleanPath, err.message);
   }
 };
 
@@ -234,14 +277,10 @@ export const moveSupabaseFileToCase = async (storagePath, caseId, storedFileName
     throw new Error(`[Supabase] Move failed: ${error.message}`);
   }
 
-  const { data: { publicUrl } } = client.storage
-    .from(BUCKET_NAME)
-    .getPublicUrl(destinationPath, { download: storedFileName });
-
   return {
     supabasePath: destinationPath,
-    fileUrl: publicUrl,
-    secure_url: publicUrl,
+    fileUrl: destinationPath,
+    secure_url: null,
   };
 };
 

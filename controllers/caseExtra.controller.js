@@ -76,15 +76,8 @@ import {
 
 import { getCaseDetails, getCases } from "../services/case.service.js";
 import { CASE_UPLOAD_ROOT } from "../middlewares/caseFileUpload.middleware.js";
-import { uploadFileToSupabase, deleteSupabaseFile, removeTempUploadFile } from "../services/supabase.service.js";
+import { uploadFileToSupabase, deleteSupabaseFile, getSupabaseDownloadUrl, removeTempUploadFile } from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
-
-const withDownloadFileName = (url, fileName) => {
-  const cleanUrl = url.replace(/([?&])download=[^&]*/i, "$1").replace(/[?&]$/, "");
-  return `${cleanUrl}${cleanUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(fileName)}`;
-};
-
-
 
 export const notes = async (req, res) => {
   await getCaseDetails(req.params.id);
@@ -160,6 +153,28 @@ export const createFile = async (req, res) => {
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "File saved", status: 201 });
 };
 
+const mergedWorkspaceResult = (libraryResult, caseResult, query = {}) => {
+  const page = Math.max(Number(query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(query.perPage) || 20, 1), 100);
+  const rows = [...libraryResult.rows, ...caseResult.rows];
+  const offset = (page - 1) * perPage;
+
+  return {
+    rows: rows.slice(offset, offset + perPage),
+    meta: {
+      page,
+      perPage,
+      total: Number(libraryResult.meta.total || 0) + Number(caseResult.meta.total || 0),
+    },
+  };
+};
+
+const workspaceFetchQuery = (query = {}) => {
+  const page = Math.max(Number(query.page) || 1, 1);
+  const perPage = Math.min(Math.max(Number(query.perPage) || 20, 1), 100);
+  return { ...query, page: 1, perPage: Math.min(page * perPage, 100) };
+};
+
 export const uploadFiles = async (req, res) => {
   const caseId = Number(req.params.id);
   await getCaseDetails(caseId);
@@ -177,22 +192,29 @@ export const uploadFiles = async (req, res) => {
   })();
 
   const uploadPromises = req.files.map(async (file, index) => {
-    const uploadResult = await uploadFileToSupabase(caseId, file);
-    await removeTempUploadFile(file);
+    let uploadResult = null;
+    try {
+      uploadResult = await uploadFileToSupabase(caseId, file);
+      await removeTempUploadFile(file);
 
-    return createCaseFile(caseId, {
-      folderType:              "private",
-      uploadCategory:          categories[index] || "photos_documents",
-      fileName:                uploadResult.fileName,
-      fileUrl:                 uploadResult.fileUrl,
-      mimeType:                file.mimetype,
-      fileSize:                file.size || file.buffer?.length || 0,
-      storageProvider:         "supabase",
-      cloudinaryPublicId:      uploadResult.supabasePath || null,
-      cloudinaryResourceType:  null,
-      cloudinarySecureUrl:     uploadResult.fileUrl,
-      cloudinaryVersion:       null,
-    }, req.user?.id || null);
+      return await createCaseFile(caseId, {
+        folderType:              "private",
+        uploadCategory:          categories[index] || "photos_documents",
+        fileName:                uploadResult.fileName,
+        fileUrl:                 uploadResult.fileUrl,
+        mimeType:                file.mimetype,
+        fileSize:                file.size || file.buffer?.length || 0,
+        storageProvider:         "supabase",
+        cloudinaryPublicId:      uploadResult.supabasePath || null,
+        cloudinaryResourceType:  null,
+        cloudinarySecureUrl:     uploadResult.secure_url || null,
+        cloudinaryVersion:       null,
+      }, req.user?.id || null);
+    } catch (error) {
+      await deleteSupabaseFile(uploadResult?.supabasePath);
+      await removeTempUploadFile(file);
+      throw error;
+    }
   });
 
   await Promise.all(uploadPromises);
@@ -202,15 +224,15 @@ export const uploadFiles = async (req, res) => {
 };
 
 export const globalFiles = async (req, res) => {
+  const query = req.validatedQuery || req.query;
+  const fetchQuery = workspaceFetchQuery(query);
   const [caseFiles, libraryFiles] = await Promise.all([
-    listCaseFilesGlobal(req.validatedQuery || req.query, req.user),
-    listAdminLibraryFiles(req.validatedQuery || req.query, req.user),
+    listCaseFilesGlobal(fetchQuery, req.user),
+    listAdminLibraryFiles(fetchQuery, req.user),
   ]);
+  const result = mergedWorkspaceResult(libraryFiles, caseFiles, query);
 
-  sendSuccess(res, {
-    data: [...libraryFiles.rows, ...caseFiles.rows],
-    meta: { ...caseFiles.meta, total: caseFiles.meta.total + libraryFiles.meta.total },
-  });
+  sendSuccess(res, { data: result.rows, meta: result.meta });
 };
 
 export const uploadGeneralFile = async (req, res) => {
@@ -224,20 +246,27 @@ export const uploadGeneralFile = async (req, res) => {
   }
   const uploaded = [];
   for (const file of req.files) {
-    const uploadResult = await uploadFileToSupabase(`general/${req.user.id}`, file);
-    await removeTempUploadFile(file);
-    await createAdminLibraryFile({
-      visibility,
-      uploadCategory,
-      uploadCategoryOtherLabel,
-      fileName: uploadResult.fileName,
-      fileUrl: uploadResult.fileUrl,
-      mimeType: file.mimetype,
-      fileSize: file.size || file.buffer?.length || 0,
-      storageProvider: "supabase",
-      storagePath: uploadResult.supabasePath,
-    }, req.user.id);
-    uploaded.push(uploadResult);
+    let uploadResult = null;
+    try {
+      uploadResult = await uploadFileToSupabase(`general/${req.user.id}`, file);
+      await createAdminLibraryFile({
+        visibility,
+        uploadCategory,
+        uploadCategoryOtherLabel,
+        fileName: uploadResult.fileName,
+        fileUrl: uploadResult.fileUrl,
+        mimeType: file.mimetype,
+        fileSize: file.size || file.buffer?.length || 0,
+        storageProvider: "supabase",
+        storagePath: uploadResult.supabasePath,
+      }, req.user.id);
+      uploaded.push(uploadResult);
+    } catch (error) {
+      await deleteSupabaseFile(uploadResult?.supabasePath);
+      throw error;
+    } finally {
+      await removeTempUploadFile(file);
+    }
   }
   const result = await listAdminLibraryFiles({ page: 1, perPage: 20 }, req.user);
   sendSuccess(res, { data: result.rows, meta: result.meta, message: `${uploaded.length} file(s) uploaded`, status: 201 });
@@ -247,11 +276,10 @@ export const downloadGeneralFile = async (req, res) => {
   const file = await getAdminLibraryFileById(Number(req.params.fileId), req.user);
   if (!file) throw new ApiError(404, "File not found");
 
-  let url = file.fileUrl;
+  let url = file.storageProvider === "supabase"
+    ? await getSupabaseDownloadUrl(file)
+    : file.fileUrl;
   if (!url) throw new ApiError(404, "File not found");
-  if (file.storageProvider === "supabase") {
-    url = withDownloadFileName(url, file.fileName);
-  }
 
   return res.redirect(url);
 };
@@ -280,15 +308,15 @@ export const removeGeneralFile = async (req, res) => {
 };
 
 export const globalNotes = async (req, res) => {
+  const query = req.validatedQuery || req.query;
+  const fetchQuery = workspaceFetchQuery(query);
   const [caseNotes, libraryNotes] = await Promise.all([
-    listCaseNotesGlobal(req.validatedQuery || req.query, req.user),
-    listAdminLibraryNotes(req.validatedQuery || req.query, req.user),
+    listCaseNotesGlobal(fetchQuery, req.user),
+    listAdminLibraryNotes(fetchQuery, req.user),
   ]);
+  const result = mergedWorkspaceResult(libraryNotes, caseNotes, query);
 
-  sendSuccess(res, {
-    data: [...libraryNotes.rows, ...caseNotes.rows],
-    meta: { ...caseNotes.meta, total: caseNotes.meta.total + libraryNotes.meta.total },
-  });
+  sendSuccess(res, { data: result.rows, meta: result.meta });
 };
 
 export const createGeneralLibraryNote = async (req, res) => {
@@ -318,9 +346,10 @@ export const removeGeneralLibraryNote = async (req, res) => {
 
 const streamOrRedirectCaseFile = async (file, res) => {
   if (["supabase", "firebase", "cloudinary"].includes(file.storageProvider)) {
-    let url = file.fileUrl || file.cloudinarySecureUrl;
+    const url = file.storageProvider === "supabase"
+      ? await getSupabaseDownloadUrl(file)
+      : file.fileUrl || file.cloudinarySecureUrl;
     if (!url) throw new ApiError(404, "File not found");
-    if (file.storageProvider === "supabase") url = withDownloadFileName(url, file.fileName);
     return res.redirect(url);
   }
 
@@ -413,40 +442,8 @@ export const downloadFile = async (req, res) => {
 
   const file = await getCaseFileById(caseId, fileId);
   if (!file) throw new ApiError(404, "File not found");
+  return streamOrRedirectCaseFile(file, res);
 
-  // Cloud-hosted files (supabase, firebase, cloudinary) — redirect to their URL
-  if (["supabase", "firebase", "cloudinary"].includes(file.storageProvider)) {
-    let url = file.fileUrl || file.cloudinarySecureUrl;
-    if (!url) throw new ApiError(404, "File not found");
-
-    // Force Supabase URLs to download if they don't already have the query param
-    if (file.storageProvider === "supabase") {
-      url = withDownloadFileName(url, file.fileName);
-    }
-
-    return res.redirect(url);
-  }
-
-  // Local files — stream directly from disk
-  const relativePath = file.cloudinaryPublicId || file.fileUrl;
-  if (!relativePath) throw new ApiError(404, "File not found");
-
-  // Try uploads root first, then legacy CASE_UPLOAD_ROOT
-  const { join } = await import("node:path");
-  let resolvedPath = join(CASE_UPLOAD_ROOT, relativePath);
-
-  if (!existsSync(resolvedPath)) {
-    // Fallback: legacy local path
-    resolvedPath = path.resolve(CASE_UPLOAD_ROOT, file.fileUrl || "");
-    if (!resolvedPath.startsWith(CASE_UPLOAD_ROOT) || !existsSync(resolvedPath)) {
-      throw new ApiError(404, "File not found on disk");
-    }
-  }
-
-  res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
-  res.setHeader("Content-Length", file.fileSize || 0);
-  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
-  createReadStream(resolvedPath).pipe(res);
 };
 
 export const removeFile = async (req, res) => {

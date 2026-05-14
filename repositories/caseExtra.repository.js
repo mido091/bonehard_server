@@ -1,6 +1,7 @@
 import { pool } from "../config/db.js";
 import { toLimitOffsetSql } from "../utils/db.js";
 import { cleanUploadDisplayName } from "../utils/fileValidation.js";
+import { sanitizeRichText } from "../utils/sanitizeRichText.js";
 
 export const listCaseNotes = async (caseId, query) => {
   const paging = toLimitOffsetSql(query);
@@ -34,7 +35,7 @@ export const createCaseNote = async (caseId, payload, userId) => {
       INSERT INTO case_notes (case_id, subject, content, created_by)
       VALUES (:caseId, :subject, :content, :userId)
     `,
-    { caseId, subject: payload.subject, content: payload.content || null, userId },
+    { caseId, subject: payload.subject, content: sanitizeRichText(payload.content), userId },
   );
 };
 
@@ -101,7 +102,7 @@ export const createCaseGeneralNote = async (caseId, payload, userId) => {
     {
       caseId,
       title: payload.title,
-      content: payload.content || null,
+      content: sanitizeRichText(payload.content),
       isPrivate: payload.isPrivate ? 1 : 0,
       userId,
     },
@@ -116,7 +117,7 @@ const normalizeResourceLinks = (links = []) => {
       label: String(link?.label || "").trim().slice(0, 160) || null,
       url: String(link?.url || "").trim().slice(0, 1000),
     }))
-    .filter((link) => link.url);
+    .filter((link) => /^(https?:)\/\//i.test(link.url));
 };
 
 export const listResourceLinks = async (entityType, entityId, options = {}) => {
@@ -255,7 +256,7 @@ export const createAdminLibraryNote = async (payload, userId) => {
       visibility: payload.visibility === "public" || payload.isPrivate === false ? "public" : "private",
       noteType: payload.noteType || "General",
       title: payload.title,
-      content: payload.content || null,
+      content: sanitizeRichText(payload.content),
     },
   );
   return result.insertId;
@@ -356,7 +357,7 @@ export const updateAdminLibraryNote = async (noteId, payload, viewer = {}) => {
     {
       noteId,
       title: payload.title,
-      content: payload.content || null,
+      content: sanitizeRichText(payload.content),
       visibility: payload.visibility === "public" || payload.isPrivate === false ? "public" : "private",
       noteType: payload.noteType || "General",
       userId: viewer.id || null,
@@ -388,7 +389,7 @@ export const updateCaseGeneralNote = async (caseId, noteId, payload, userId) => 
       caseId,
       noteId,
       title: payload.title,
-      content: payload.content || null,
+      content: sanitizeRichText(payload.content),
       isPrivate: payload.isPrivate ? 1 : 0,
       userId,
     },

@@ -372,5 +372,13 @@ export const userCanAccessChannel = async (channelName, user) => {
     return userCanAccessGroup(Number(groupMatch[1]), user);
   }
 
+  // Client Talk session channels are scoped to the user owner and the assigned staff member.
+  // Admin archive access goes through HTTP APIs, not broad realtime subscriptions.
+  const ctMatch = channelName.match(/^private-client-talk-session-(\d+)$/);
+  if (ctMatch) {
+    const { userCanAccessSession } = await import("./clientTalk.repository.js");
+    return userCanAccessSession(Number(ctMatch[1]), user);
+  }
+
   return false;
 };

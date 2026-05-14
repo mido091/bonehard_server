@@ -6,13 +6,9 @@ import {
 import { getUserOrderDashboardAnalytics } from "../repositories/userDashboard.repository.js";
 import { createUserOrderRecordWithFiles, deleteUserOrderFile, getUserOrderDetails, getUserOrderFile, getUserOrders, renameUserOrderFile, updateUserOrderRecordWithFiles } from "../services/case.service.js";
 import { triggerRealtimeEvent } from "../services/pusher.service.js";
+import { getSupabaseDownloadUrl } from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 import { userOrderPayloadSchema } from "../validators/userOrder.validator.js";
-
-const withDownloadFileName = (url, fileName) => {
-  const cleanUrl = url.replace(/([?&])download=[^&]*/i, "$1").replace(/[?&]$/, "");
-  return `${cleanUrl}${cleanUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(fileName)}`;
-};
 
 export const list = async (req, res) => {
   const result = await getUserOrders(req.validatedQuery || req.query, req.user.id);
@@ -31,12 +27,10 @@ export const detail = async (req, res) => {
 
 export const downloadFile = async (req, res) => {
   const file = await getUserOrderFile(req.params.id, req.params.fileId, req.user.id);
-  let url = file.fileUrl || file.cloudinarySecureUrl;
+  const url = file.storageProvider === "supabase"
+    ? await getSupabaseDownloadUrl(file)
+    : file.fileUrl || file.cloudinarySecureUrl;
   if (!url) throw new ApiError(404, "File not found");
-
-  if (file.storageProvider === "supabase") {
-    url = withDownloadFileName(url, file.fileName);
-  }
 
   return res.redirect(url);
 };

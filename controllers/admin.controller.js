@@ -16,6 +16,7 @@ import {
 } from "../services/case.service.js";
 import { exportAdminUserOrderPackage } from "../services/exportPackage.service.js";
 import { exportAdminUserOrderCsvPackage, exportDashboardCsvPackage } from "../services/csvExport.service.js";
+import { getSupabaseDownloadUrl } from "../services/supabase.service.js";
 import { listTeamsOptions, getUserReport } from "../repositories/caseExtra.repository.js";
 
 import {
@@ -32,11 +33,6 @@ import { getAssignableUsers } from "../repositories/user.repository.js";
 import { createUser } from "../repositories/user.repository.js";
 import { hashPassword } from "../utils/password.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
-
-const withDownloadFileName = (url, fileName) => {
-  const cleanUrl = url.replace(/([?&])download=[^&]*/i, "$1").replace(/[?&]$/, "");
-  return `${cleanUrl}${cleanUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(fileName)}`;
-};
 
 export const stats = async (req, res) => {
   const data = await getAdminStats();
@@ -100,12 +96,10 @@ export const exportUserOrderCsv = async (req, res) => {
 
 export const downloadUserOrderFile = async (req, res) => {
   const file = await getAdminUserOrderFile(req.params.id, req.params.fileId);
-  let url = file.fileUrl || file.cloudinarySecureUrl;
+  const url = file.storageProvider === "supabase"
+    ? await getSupabaseDownloadUrl(file)
+    : file.fileUrl || file.cloudinarySecureUrl;
   if (!url) throw new ApiError(404, "File not found");
-
-  if (file.storageProvider === "supabase") {
-    url = withDownloadFileName(url, file.fileName);
-  }
 
   return res.redirect(url);
 };

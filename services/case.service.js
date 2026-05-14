@@ -354,7 +354,7 @@ const toCaseFilePayload = (multerFile, uploadResult, uploadCategory = "photos_do
   // Store the storage path in cloudinaryPublicId for deletion later
   cloudinaryPublicId:      uploadResult.supabasePath || null,
   cloudinaryResourceType:  null,
-  cloudinarySecureUrl:     uploadResult.fileUrl || null,
+  cloudinarySecureUrl:     uploadResult.secure_url || null,
   cloudinaryVersion:       null,
 });
 

@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import { getAssignableUsers } from "../repositories/user.repository.js";
 import { listCaseFiles, listCaseGeneralNotes, listCustomFields } from "../repositories/caseExtra.repository.js";
 import { getAdminUserOrderDetails, getCaseDetails, getUserOrderDetails } from "./case.service.js";
+import { downloadSupabaseFile } from "./supabase.service.js";
 
 const ZIP_MIME = "application/zip";
 
@@ -257,20 +258,26 @@ const generatePdfBuffer = ({ title, subtitle, sections }) => new Promise((resolv
   doc.end();
 });
 
-const getAttachmentUrl = (file) => {
-  let url = file.fileUrl || file.cloudinarySecureUrl;
-  if (url && file.storageProvider === "supabase" && !url.includes("?download=")) {
-    url += `?download=${encodeURIComponent(file.fileName || "attachment")}`;
-  }
-  return url;
-};
-
 const appendAttachment = async (archive, file, usedNames) => {
   const baseName = sanitizeFileName(file.fileName, `attachment-${file.id || Date.now()}`);
   const name = usedNames.has(baseName) ? `${file.id || usedNames.size + 1}-${baseName}` : baseName;
   usedNames.add(name);
   const archivePath = `attachments/${name}`;
-  const url = getAttachmentUrl(file);
+
+  if (file.storageProvider === "supabase") {
+    try {
+      const blob = await downloadSupabaseFile(file.cloudinaryPublicId || file.fileUrl);
+      if (!blob) throw new Error("Missing storage path");
+      archive.append(Readable.fromWeb(blob.stream()), { name: archivePath });
+    } catch (error) {
+      archive.append(`Attachment could not be included: ${file.fileName || "unknown"}\n${error.message}`, {
+        name: `${archivePath}.download-error.txt`,
+      });
+    }
+    return;
+  }
+
+  const url = file.fileUrl || file.cloudinarySecureUrl;
 
   if (!url || !/^https?:\/\//i.test(url)) {
     archive.append(`Attachment could not be included: ${file.fileName || "unknown"}\nMissing downloadable URL.`, {
