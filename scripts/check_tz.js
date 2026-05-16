@@ -8,6 +8,6 @@ const conn = await mysql.createConnection({
   database: process.env.DB_DATABASE,
   ssl: { ca: fs.readFileSync('./isrgrootx1.pem', 'utf8') }
 });
-const [[tz]] = await conn.execute("SELECT NOW() AS dbNow, UTC_TIMESTAMP() AS utcNow");
+const [[tz]] = await conn.query("SELECT NOW() AS dbNow, UTC_TIMESTAMP() AS utcNow");
 console.log(JSON.stringify(tz));
 await conn.end();

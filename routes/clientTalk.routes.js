@@ -14,10 +14,14 @@ import {
   acceptSessionHandler,
   deleteArchive,
   endSessionHandler,
+  getAdminRecordSessionTranscript,
   getArchiveDetail,
   getParticipantSession,
   getSession,
+  getUserOrderSessionTranscript,
+  listAdminRecordSessions,
   listArchive,
+  listUserOrderSessions,
   listMessages,
   openOrderTalkAsStaff,
   requestTalk,
@@ -29,6 +33,7 @@ import {
   requireAuth,
   requireUserDashboard,
 } from "../middlewares/auth.middleware.js";
+import { handleChatImageUpload } from "../middlewares/chatImageUpload.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
 import { asyncHandler } from "../utils/apiResponse.js";
 import {
@@ -58,6 +63,22 @@ clientTalkUserRoutes.get(
   asyncHandler(getSession),
 );
 
+clientTalkUserRoutes.get(
+  "/user/orders/:id/client-talk/sessions",
+  requireAuth,
+  requireUserDashboard,
+  validate(orderParamSchema, "params"),
+  asyncHandler(listUserOrderSessions),
+);
+
+clientTalkUserRoutes.get(
+  "/user/orders/:id/client-talk/sessions/:sessionId",
+  requireAuth,
+  requireUserDashboard,
+  validate(orderParamSchema.merge(sessionParamSchema), "params"),
+  asyncHandler(getUserOrderSessionTranscript),
+);
+
 // ── Shared participant endpoints (auth only — participant check inside handler) ─
 export const clientTalkSharedRoutes = Router();
 
@@ -80,6 +101,7 @@ clientTalkSharedRoutes.post(
   "/client-talk/sessions/:sessionId/messages",
   requireAuth,
   validate(sessionParamSchema, "params"),
+  handleChatImageUpload,  // handles multipart image upload; passes through for JSON
   validate(sendMessageSchema),
   asyncHandler(sendMessage),
 );
@@ -118,12 +140,44 @@ clientTalkAdminRoutes.post(
   asyncHandler(openOrderTalkAsStaff),
 );
 
+clientTalkAdminRoutes.get(
+  "/user-orders/:id/client-talk/sessions",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema, "params"),
+  asyncHandler(listAdminRecordSessions),
+);
+
+clientTalkAdminRoutes.get(
+  "/user-orders/:id/client-talk/sessions/:sessionId",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema.merge(sessionParamSchema), "params"),
+  asyncHandler(getAdminRecordSessionTranscript),
+);
+
 clientTalkAdminRoutes.post(
   "/cases/:id/client-talk/open",
   requireAuth,
   requireAdminOrAssistant,
   validate(orderParamSchema, "params"),
   asyncHandler(openOrderTalkAsStaff),
+);
+
+clientTalkAdminRoutes.get(
+  "/cases/:id/client-talk/sessions",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema, "params"),
+  asyncHandler(listAdminRecordSessions),
+);
+
+clientTalkAdminRoutes.get(
+  "/cases/:id/client-talk/sessions/:sessionId",
+  requireAuth,
+  requireAdminOrAssistant,
+  validate(orderParamSchema.merge(sessionParamSchema), "params"),
+  asyncHandler(getAdminRecordSessionTranscript),
 );
 
 clientTalkAdminRoutes.get(

@@ -92,7 +92,9 @@ const pool = mysql.createPool({
   queueLimit: 0,                    // Unlimited queue size (0 = no limit)
   enableKeepAlive: true,            // Send periodic keep-alive pings
   keepAliveInitialDelay: 10000,     // First keep-alive after 10 seconds of idle
-  timezone: 'Z',                    // Interpret DB datetimes as UTC ('Z') to ensure absolute JS Date objects match client time precisely
+  timezone: 'Z',
+  supportBigNumbers: true,
+  bigNumberStrings: true,
 });
 
 // Listen for unexpected idle connection errors (e.g. DB server restarted)

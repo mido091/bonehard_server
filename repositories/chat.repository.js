@@ -4,7 +4,7 @@ import { toLimitOffsetSql } from "../utils/db.js";
 // ─── Group Management ──────────────────────────────────────────────────────
 
 export const getGroupById = async (id) => {
-  const [[row]] = await pool.execute(
+  const [[row]] = await pool.query(
     `SELECT id, name, type, created_by AS createdBy, created_at AS createdAt FROM chat_groups WHERE id = :id LIMIT 1`,
     { id },
   );
@@ -12,7 +12,7 @@ export const getGroupById = async (id) => {
 };
 
 export const getGroupMembers = async (groupId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT u.id, u.name, u.email, u.role FROM users u
      INNER JOIN chat_group_members m ON m.user_id = u.id
      WHERE m.group_id = :groupId ORDER BY u.name ASC`,
@@ -26,7 +26,7 @@ export const getGroupMembers = async (groupId) => {
  * Returns the group row or null if none exists.
  */
 export const findDirectChat = async (userAId, userBId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT g.id FROM chat_groups g
      WHERE g.type = 'direct'
        AND EXISTS (SELECT 1 FROM chat_group_members WHERE group_id = g.id AND user_id = :userA)
@@ -46,7 +46,7 @@ export const findDirectChat = async (userAId, userBId) => {
  * @param {number[]} memberIds  - Array of user ids to add (must include createdBy)
  */
 export const createGroup = async (name, type, createdBy, memberIds) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `INSERT INTO chat_groups (name, type, created_by) VALUES (:name, :type, :createdBy)`,
     { name, type, createdBy },
   );
@@ -55,7 +55,7 @@ export const createGroup = async (name, type, createdBy, memberIds) => {
   // Add all members in a single multi-row INSERT
   const uniqueIds = [...new Set(memberIds.map(Number))];
   for (const userId of uniqueIds) {
-    await pool.execute(
+    await pool.query(
       `INSERT IGNORE INTO chat_group_members (group_id, user_id) VALUES (:groupId, :userId)`,
       { groupId, userId },
     );
@@ -64,11 +64,11 @@ export const createGroup = async (name, type, createdBy, memberIds) => {
 };
 
 export const deleteGroup = async (id) => {
-  await pool.execute(`DELETE FROM chat_groups WHERE id = :id`, { id });
+  await pool.query(`DELETE FROM chat_groups WHERE id = :id`, { id });
 };
 
 export const addGroupMember = async (groupId, userId) => {
-  await pool.execute(
+  await pool.query(
     `INSERT IGNORE INTO chat_group_members (group_id, user_id) VALUES (:groupId, :userId)`,
     { groupId, userId },
   );
@@ -76,7 +76,7 @@ export const addGroupMember = async (groupId, userId) => {
 };
 
 export const removeGroupMember = async (groupId, userId) => {
-  await pool.execute(
+  await pool.query(
     `DELETE FROM chat_group_members WHERE group_id = :groupId AND user_id = :userId`,
     { groupId, userId },
   );
@@ -85,7 +85,7 @@ export const removeGroupMember = async (groupId, userId) => {
 
 export const listChatContacts = async (user) => {
   if (user.role === "user") {
-    const [rows] = await pool.execute(
+    const [rows] = await pool.query(
       `
         SELECT id, name
         FROM users
@@ -100,7 +100,7 @@ export const listChatContacts = async (user) => {
     return rows;
   }
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id, name, email, role
       FROM users
@@ -115,7 +115,7 @@ export const listChatContacts = async (user) => {
 };
 
 export const getUserChatContact = async (id) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id, name
       FROM users
@@ -133,7 +133,7 @@ export const getUserChatContact = async (id) => {
 
 
 export const getMaxRoleRankForGroup = async (groupId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT MAX(CASE u.role WHEN 'admin' THEN 3 WHEN 'assistant' THEN 2 ELSE 1 END) as maxRank 
      FROM chat_group_members cgm 
      JOIN users u ON u.id = cgm.user_id 
@@ -146,7 +146,7 @@ export const getMaxRoleRankForGroup = async (groupId) => {
 export const userCanAccessGroup = async (groupId, user) => {
   // Chat is account-scoped for every role. Admin/assistant users should not
   // receive or read conversations unless they are explicit members.
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT 1 FROM chat_group_members WHERE group_id = :groupId AND user_id = :userId LIMIT 1`,
     { groupId, userId: user.id },
   );
@@ -159,7 +159,7 @@ export const userCanAccessCase = async (caseId, user) => {
     return true;
   }
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT 1
       FROM cases
@@ -178,7 +178,7 @@ export const listConversations = async (user, query) => {
   const params = { userId: user.id };
   const memberFilter = "INNER JOIN chat_group_members current_member ON current_member.group_id = g.id AND current_member.user_id = :userId";
 
-    const [rows] = await pool.execute(
+    const [rows] = await pool.query(
     `
       SELECT
         g.id,
@@ -214,7 +214,7 @@ export const listConversations = async (user, query) => {
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `
       SELECT COUNT(DISTINCT g.id) AS total
       FROM chat_groups g
@@ -237,7 +237,7 @@ export const listConversations = async (user, query) => {
 
 export const listMessages = async (groupId, query) => {
   const paging = toLimitOffsetSql(query);
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT m.id, m.group_id AS groupId, m.sender_id AS senderId, u.name AS senderName,
         m.body, m.created_at AS createdAt
@@ -257,7 +257,7 @@ export const listMessages = async (groupId, query) => {
 };
 
 export const createMessage = async (groupId, userId, body) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO messages (group_id, sender_id, body)
       VALUES (:groupId, :userId, :body)
@@ -265,12 +265,12 @@ export const createMessage = async (groupId, userId, body) => {
     { groupId, userId, body },
   );
 
-  await pool.execute(
+  await pool.query(
     `UPDATE chat_groups SET updated_at = CURRENT_TIMESTAMP WHERE id = :groupId`,
     { groupId },
   );
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT m.id, m.group_id AS groupId, m.sender_id AS senderId, u.name AS senderName,
         m.body, m.created_at AS createdAt
@@ -286,14 +286,14 @@ export const createMessage = async (groupId, userId, body) => {
 };
 
 export const markGroupRead = async (groupId, userId) => {
-  const [[latest]] = await pool.execute(
+  const [[latest]] = await pool.query(
     `SELECT MAX(id) AS latestMessageId FROM messages WHERE group_id = :groupId`,
     { groupId },
   );
 
   const latestMessageId = latest?.latestMessageId || null;
 
-  await pool.execute(
+  await pool.query(
     `
       INSERT INTO chat_group_members (group_id, user_id, last_read_message_id)
       VALUES (:groupId, :userId, :latestMessageId)
@@ -306,7 +306,7 @@ export const markGroupRead = async (groupId, userId) => {
 };
 
 export const getGroupMemberIds = async (groupId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT user_id AS userId FROM chat_group_members WHERE group_id = :groupId`,
     { groupId },
   );
@@ -316,7 +316,7 @@ export const getGroupMemberIds = async (groupId) => {
 
 export const listClientTalk = async (caseId, query) => {
   const paging = toLimitOffsetSql(query);
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT m.id, m.case_id AS caseId, m.sender_id AS senderId, u.name AS senderName,
         m.body, m.read_at AS readAt, m.created_at AS createdAt
@@ -333,7 +333,7 @@ export const listClientTalk = async (caseId, query) => {
 };
 
 export const createClientTalkMessage = async (caseId, userId, body) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO case_client_messages (case_id, sender_id, body)
       VALUES (:caseId, :userId, :body)
@@ -341,7 +341,7 @@ export const createClientTalkMessage = async (caseId, userId, body) => {
     { caseId, userId, body },
   );
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT m.id, m.case_id AS caseId, m.sender_id AS senderId, u.name AS senderName,
         m.body, m.read_at AS readAt, m.created_at AS createdAt

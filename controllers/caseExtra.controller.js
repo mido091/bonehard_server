@@ -21,9 +21,14 @@ import {
   createOrder,
   createTemplate,
   createTemplateTask,
+  createNoteFileAttachment,
+  deleteAllAdminNoteAttachments,
+  deleteAllNoteAttachments,
   deleteCaseFile,
   deleteAdminLibraryFile,
   deleteAdminLibraryNote,
+  deleteNoteFileAttachment,
+  getNoteAttachmentById,
   deleteProduct,
   deleteSector,
   deleteCasePhase,
@@ -50,6 +55,7 @@ import {
   listCaseSystemSettings,
   listCustomFields,
   listGlobalTimers,
+  listNoteAttachments,
   listOrders,
   listProducts,
   listSectors,
@@ -72,12 +78,52 @@ import {
   deleteCaseGeneralNoteByNoteId,
   deleteCaseFileByFileId,
   replaceResourceLinks,
+  getAdminLibraryNoteById,
+  createAdminNoteFileAttachment,
+  listAdminNoteAttachments,
+  getAdminNoteAttachmentById,
+  deleteAdminNoteFileAttachment,
 } from "../repositories/caseExtra.repository.js";
 
 import { getCaseDetails, getCases } from "../services/case.service.js";
 import { CASE_UPLOAD_ROOT } from "../middlewares/caseFileUpload.middleware.js";
-import { uploadFileToSupabase, deleteSupabaseFile, getSupabaseDownloadUrl, removeTempUploadFile } from "../services/supabase.service.js";
+import {
+  uploadFileToSupabase,
+  deleteSupabaseFile,
+  getSupabaseDownloadUrl,
+  getSupabaseDownloadFileName,
+  downloadSupabaseFile,
+  removeTempUploadFile,
+} from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
+
+const removeStoredAttachments = async (attachments = []) => {
+  await Promise.all(
+    attachments.map(async (file) => {
+      if (file?.storageProvider === "supabase" && file.storagePath) {
+        await deleteSupabaseFile(file.storagePath);
+      }
+    }),
+  );
+};
+
+const contentDispositionHeader = (fileName) => {
+  const fallbackName = String(fileName || "attachment").replace(/[^\x20-\x7E]+/g, "_").replace(/["\\]/g, "");
+  return `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(fileName || "attachment")}`;
+};
+
+const streamSupabaseAttachment = async (file, res) => {
+  const storagePath = file.storagePath || file.cloudinaryPublicId || file.fileUrl;
+  const blob = await downloadSupabaseFile(storagePath);
+  if (!blob) throw new ApiError(404, "File not found");
+
+  const fileName = getSupabaseDownloadFileName(file);
+  res.setHeader("Content-Type", file.mimeType || blob.type || "application/octet-stream");
+  res.setHeader("Content-Length", file.fileSize || blob.size || 0);
+  res.setHeader("Content-Disposition", contentDispositionHeader(fileName));
+
+  return Readable.fromWeb(blob.stream()).pipe(res);
+};
 
 export const notes = async (req, res) => {
   await getCaseDetails(req.params.id);
@@ -121,10 +167,98 @@ export const updateGeneralNote = async (req, res) => {
 
 export const removeGeneralNote = async (req, res) => {
   await getCaseDetails(req.params.id);
+  const note = await getCaseGeneralNoteById(req.params.id, req.params.noteId);
+  if (!note) throw new ApiError(404, "Note not found");
+  const attachments = await deleteAllNoteAttachments(Number(req.params.id), Number(req.params.noteId));
+  await removeStoredAttachments(attachments);
   const deleted = await deleteCaseGeneralNote(req.params.id, req.params.noteId);
   if (!deleted) throw new ApiError(404, "Note not found");
 
   sendSuccess(res, { message: "Note deleted" });
+};
+
+/**
+ * POST /api/cases/:id/general-notes/:noteId/attachments
+ * Uploads one or more files and links them to a specific general note.
+ * Accepts multipart/form-data with field "files" (same as regular case uploads).
+ */
+export const uploadNoteAttachments = async (req, res) => {
+  const caseId  = Number(req.params.id);
+  const noteId  = Number(req.params.noteId);
+  await getCaseDetails(caseId);
+
+  const note = await getCaseGeneralNoteById(caseId, noteId);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  if (!req.files?.length) {
+    throw new ApiError(422, "Select at least one file to upload");
+  }
+
+  const uploadPromises = req.files.map(async (file) => {
+    let uploadResult = null;
+    try {
+      uploadResult = await uploadFileToSupabase(caseId, file);
+      await removeTempUploadFile(file);
+
+      await createNoteFileAttachment(caseId, noteId, {
+        fileName:        uploadResult.fileName,
+        fileUrl:         uploadResult.supabasePath,
+        mimeType:        file.mimetype,
+        fileSize:        file.size || file.buffer?.length || 0,
+        storageProvider: "supabase",
+        storagePath:     uploadResult.supabasePath,
+      }, req.user?.id || null);
+    } catch (error) {
+      await deleteSupabaseFile(uploadResult?.supabasePath);
+      await removeTempUploadFile(file);
+      throw error;
+    }
+  });
+
+  await Promise.all(uploadPromises);
+
+  const attachments = await listNoteAttachments(noteId);
+  sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });
+};
+
+/**
+ * DELETE /api/cases/:id/general-notes/:noteId/attachments/:fileId
+ * Removes a single file attachment from a note (DB + Supabase storage).
+ */
+export const removeNoteAttachment = async (req, res) => {
+  const caseId  = Number(req.params.id);
+  const noteId  = Number(req.params.noteId);
+  const fileId  = Number(req.params.fileId);
+  await getCaseDetails(caseId);
+
+  const file = await deleteNoteFileAttachment(caseId, noteId, fileId);
+  if (!file) throw new ApiError(404, "Attachment not found");
+
+  // Remove from Supabase if possible — failure is non-fatal
+  if (file.storageProvider === "supabase" && file.storagePath) {
+    await deleteSupabaseFile(file.storagePath);
+  }
+
+  sendSuccess(res, { message: "Attachment deleted" });
+};
+
+export const downloadNoteAttachment = async (req, res) => {
+  const caseId = Number(req.params.id);
+  const noteId = Number(req.params.noteId);
+  const fileId = Number(req.params.fileId);
+  await getCaseDetails(caseId);
+
+  const note = await getCaseGeneralNoteById(caseId, noteId);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const file = await getNoteAttachmentById(caseId, noteId, fileId);
+  if (!file) throw new ApiError(404, "Attachment not found");
+
+  if (file.storageProvider === "supabase") {
+    return streamSupabaseAttachment(file, res);
+  }
+
+  return streamOrRedirectCaseFile(file, res);
 };
 
 export const timers = async (req, res) => {
@@ -276,12 +410,7 @@ export const downloadGeneralFile = async (req, res) => {
   const file = await getAdminLibraryFileById(Number(req.params.fileId), req.user);
   if (!file) throw new ApiError(404, "File not found");
 
-  let url = file.storageProvider === "supabase"
-    ? await getSupabaseDownloadUrl(file)
-    : file.fileUrl;
-  if (!url) throw new ApiError(404, "File not found");
-
-  return res.redirect(url);
+  return streamOrRedirectCaseFile(file, res);
 };
 
 export const renameGeneralFile = async (req, res) => {
@@ -321,10 +450,10 @@ export const globalNotes = async (req, res) => {
 
 export const createGeneralLibraryNote = async (req, res) => {
   const payload = req.validatedBody || req.body;
-  const noteId = await createAdminLibraryNote(payload, req.user.id);
-  await replaceResourceLinks("admin_library_note", noteId, payload.referenceLinks || payload.links || [], req.user.id);
-  const result = await listAdminLibraryNotes({ page: 1, perPage: 20 }, req.user);
-  sendSuccess(res, { data: result.rows, meta: result.meta, message: "General note created", status: 201 });
+  const note = await createAdminLibraryNote(payload, req.user.id);
+  await replaceResourceLinks("admin_library_note", note.id, payload.referenceLinks || payload.links || [], req.user.id);
+  const hydratedNote = await getAdminLibraryNoteById(note.id, req.user);
+  sendSuccess(res, { data: hydratedNote, message: "General note created", status: 201 });
 };
 
 export const updateGeneralLibraryNote = async (req, res) => {
@@ -338,13 +467,96 @@ export const updateGeneralLibraryNote = async (req, res) => {
 };
 
 export const removeGeneralLibraryNote = async (req, res) => {
+  const existingNote = await getAdminLibraryNoteById(Number(req.params.noteId), req.user);
+  if (!existingNote) throw new ApiError(404, "Note not found");
+  const attachments = await deleteAllAdminNoteAttachments(Number(req.params.noteId));
+  await removeStoredAttachments(attachments);
   const note = await deleteAdminLibraryNote(Number(req.params.noteId), req.user);
   if (!note) throw new ApiError(404, "Note not found");
 
   sendSuccess(res, { message: "Note deleted" });
 };
 
-const streamOrRedirectCaseFile = async (file, res) => {
+/**
+ * POST /api/cases/notes/general/:noteId/attachments
+ * Uploads one or more files and links them to an admin library note.
+ */
+export const uploadAdminNoteAttachments = async (req, res) => {
+  const noteId = Number(req.params.noteId);
+  const note = await getAdminLibraryNoteById(noteId, req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  if (!req.files?.length) {
+    throw new ApiError(400, "No files uploaded");
+  }
+
+  const uploadPromises = req.files.map(async (file) => {
+    let uploadResult = null;
+    try {
+      uploadResult = await uploadFileToSupabase(`general-note-${noteId}`, file);
+      await removeTempUploadFile(file);
+
+      await createAdminNoteFileAttachment(noteId, {
+        fileName:        uploadResult.fileName,
+        fileUrl:         uploadResult.supabasePath,
+        mimeType:        file.mimetype,
+        fileSize:        file.size || file.buffer?.length || 0,
+        storageProvider: "supabase",
+        storagePath:     uploadResult.supabasePath,
+      }, req.user?.id || null);
+    } catch (error) {
+      await deleteSupabaseFile(uploadResult?.supabasePath);
+      await removeTempUploadFile(file);
+      throw error;
+    }
+  });
+
+  await Promise.all(uploadPromises);
+
+  const attachments = await listAdminNoteAttachments(noteId);
+  sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });
+};
+
+/**
+ * DELETE /api/cases/notes/general/:noteId/attachments/:fileId
+ * Removes a single file attachment from an admin library note.
+ */
+export const removeAdminNoteAttachment = async (req, res) => {
+  const noteId  = Number(req.params.noteId);
+  const fileId  = Number(req.params.fileId);
+  
+  // Basic ownership/existence check
+  const note = await getAdminLibraryNoteById(noteId, req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const file = await deleteAdminNoteFileAttachment(noteId, fileId);
+  if (!file) throw new ApiError(404, "Attachment not found");
+
+  if (file.storageProvider === "supabase" && file.storagePath) {
+    await deleteSupabaseFile(file.storagePath);
+  }
+
+  sendSuccess(res, { message: "Attachment deleted" });
+};
+
+export const downloadAdminNoteAttachment = async (req, res) => {
+  const noteId = Number(req.params.noteId);
+  const fileId = Number(req.params.fileId);
+
+  const note = await getAdminLibraryNoteById(noteId, req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const file = await getAdminNoteAttachmentById(noteId, fileId, req.user);
+  if (!file) throw new ApiError(404, "Attachment not found");
+
+  if (file.storageProvider === "supabase") {
+    return streamSupabaseAttachment(file, res);
+  }
+
+  return streamOrRedirectCaseFile(file, res);
+};
+
+async function streamOrRedirectCaseFile(file, res) {
   if (["supabase", "firebase", "cloudinary"].includes(file.storageProvider)) {
     const url = file.storageProvider === "supabase"
       ? await getSupabaseDownloadUrl(file)

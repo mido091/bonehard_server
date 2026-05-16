@@ -215,7 +215,7 @@ export const listCases = async (filters) => {
   const sortColumn = sortMap[filters.sortBy] || sortMap.createdAt;
   const sortDir = filters.sortDir === "asc" ? "ASC" : "DESC";
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${caseSelect}
       FROM cases c
@@ -227,7 +227,7 @@ export const listCases = async (filters) => {
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `SELECT COUNT(*) AS total FROM cases c ${whereSql}`,
     params,
   );
@@ -243,7 +243,7 @@ export const listCases = async (filters) => {
 };
 
 export const getCaseById = async (id) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${caseSelect}
       FROM cases c
@@ -258,7 +258,7 @@ export const getCaseById = async (id) => {
 };
 
 export const createCase = async (data, userId, connection = pool) => {
-  const [result] = await connection.execute(
+  const [result] = await connection.query(
     `
       INSERT INTO cases (
         name, description, client_description, status_id, target_id, secondary_client_id,
@@ -304,7 +304,7 @@ export const createCase = async (data, userId, connection = pool) => {
 };
 
 export const updateCase = async (id, data, connection = pool) => {
-  await connection.execute(
+  await connection.query(
     `
       UPDATE cases
       SET
@@ -359,7 +359,7 @@ export const updateCase = async (id, data, connection = pool) => {
 };
 
 export const cloneCase = async (id, userId, connection = pool) => {
-  const [rows] = await connection.execute(
+  const [rows] = await connection.query(
     `
       SELECT name, description, status_id AS statusId, target_id AS targetId,
         secondary_client_id AS secondaryClientId, project_leader_id AS projectLeaderId,
@@ -378,7 +378,7 @@ export const cloneCase = async (id, userId, connection = pool) => {
   const source = rows[0];
   if (!source) return null;
 
-  const [result] = await connection.execute(
+  const [result] = await connection.query(
     `
       INSERT INTO cases (
         name, description, status_id, target_id, secondary_client_id,
@@ -407,7 +407,7 @@ export const cloneCase = async (id, userId, connection = pool) => {
 };
 
 export const updateCaseStatus = async (id, statusId) => {
-  await pool.execute(
+  await pool.query(
     `
       UPDATE cases c
       JOIN case_statuses s ON s.id = :statusId
@@ -420,14 +420,14 @@ export const updateCaseStatus = async (id, statusId) => {
 };
 
 export const archiveCase = async (id) => {
-  await pool.execute(
+  await pool.query(
     `UPDATE cases SET is_archived = 1 WHERE id = :id`,
     { id },
   );
 };
 
 export const refreshCaseProgress = async (caseId, connection = pool) => {
-  await connection.execute(
+  await connection.query(
     `
       UPDATE cases c
       LEFT JOIN (
@@ -450,7 +450,7 @@ export const refreshCaseProgress = async (caseId, connection = pool) => {
 };
 
 export const countCaseStats = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
         COUNT(*) AS totalCases,

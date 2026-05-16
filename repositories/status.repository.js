@@ -12,7 +12,7 @@ const officialStatusSql = officialCaseStatuses
   .join(", ");
 
 export const listCaseStatuses = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id, name, color, sort_order AS sortOrder, is_default AS isDefault
       FROM case_statuses
@@ -26,7 +26,7 @@ export const listCaseStatuses = async () => {
 };
 
 export const createCaseStatus = async ({ name, color = "#64748b", sortOrder = 0 }) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `INSERT INTO case_statuses (name, color, sort_order) VALUES (:name, :color, :sortOrder)`,
     { name, color, sortOrder },
   );
@@ -43,18 +43,18 @@ export const updateCaseStatus = async (id, { name, color, sortOrder }) => {
 
   if (!fields.length) return;
 
-  await pool.execute(
+  await pool.query(
     `UPDATE case_statuses SET ${fields.join(", ")} WHERE id = :id`,
     params,
   );
 };
 
 export const deleteCaseStatus = async (id) => {
-  await pool.execute(`DELETE FROM case_statuses WHERE id = :id AND is_default = 0`, { id });
+  await pool.query(`DELETE FROM case_statuses WHERE id = :id AND is_default = 0`, { id });
 };
 
 export const statusExists = async (id) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT id FROM case_statuses WHERE id = :id AND name IN (${officialStatusSql}) LIMIT 1`,
     { id, ...officialStatusParams },
   );
@@ -63,7 +63,7 @@ export const statusExists = async (id) => {
 };
 
 export const getOfficialStatusByName = async (name) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT id, name, color, sort_order AS sortOrder FROM case_statuses WHERE name = :name AND name IN (${officialStatusSql}) LIMIT 1`,
     { name, ...officialStatusParams },
   );

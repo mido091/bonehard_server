@@ -171,6 +171,23 @@ CREATE TABLE IF NOT EXISTS case_general_notes (
   INDEX idx_case_general_notes_case_created (case_id, created_at)
 );
 
+CREATE TABLE IF NOT EXISTS note_attachments (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  entity_type ENUM('case_note', 'admin_library_note') NOT NULL,
+  entity_id BIGINT UNSIGNED NOT NULL,
+  created_by BIGINT UNSIGNED NULL,
+  file_name VARCHAR(190) NOT NULL,
+  file_url VARCHAR(700) NOT NULL,
+  mime_type VARCHAR(120) NULL,
+  file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  storage_provider VARCHAR(60) NOT NULL DEFAULT 'supabase',
+  storage_path VARCHAR(700) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_note_attachments_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_note_attachments_entity (entity_type, entity_id, created_at),
+  INDEX idx_note_attachments_storage (storage_provider, storage_path(190))
+);
+
 CREATE TABLE IF NOT EXISTS visits (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   ip_address VARCHAR(80) NULL,
@@ -365,6 +382,16 @@ CREATE TABLE IF NOT EXISTS case_client_messages (
   INDEX idx_client_messages_case_created (case_id, created_at),
   INDEX idx_client_messages_unread (case_id, read_at)
 );
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS session_id BIGINT UNSIGNED NULL AFTER case_id;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS message_type ENUM('text', 'image') NOT NULL DEFAULT 'text' AFTER body;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(190) NULL AFTER message_type;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_url VARCHAR(700) NULL AFTER attachment_name;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_mime_type VARCHAR(120) NULL AFTER attachment_url;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER attachment_mime_type;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_storage_provider VARCHAR(60) NULL AFTER attachment_size;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_storage_path VARCHAR(700) NULL AFTER attachment_storage_provider;
+ALTER TABLE case_client_messages ADD INDEX IF NOT EXISTS idx_ccm_session_id (session_id);
+ALTER TABLE case_client_messages ADD INDEX IF NOT EXISTS idx_ccm_type_created (message_type, created_at);
 
 CREATE TABLE IF NOT EXISTS case_task_files (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -639,22 +666,24 @@ CREATE INDEX IF NOT EXISTS idx_case_files_case_category ON case_files (case_id, 
 
 CREATE TABLE IF NOT EXISTS admin_library_files (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  uploaded_by BIGINT UNSIGNED NULL,
-  visibility ENUM('private', 'public') NOT NULL DEFAULT 'private',
-  upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'general',
-  upload_category_other_label VARCHAR(120) NULL,
+  note_id BIGINT UNSIGNED NULL,
   file_name VARCHAR(255) NOT NULL,
-  file_url VARCHAR(700) NOT NULL,
-  mime_type VARCHAR(120) NULL,
-  file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  storage_provider VARCHAR(40) NOT NULL DEFAULT 'supabase',
-  storage_path VARCHAR(255) NULL,
+  file_url VARCHAR(1000) NOT NULL,
+  mime_type VARCHAR(100) NULL,
+  file_size BIGINT UNSIGNED DEFAULT 0,
+  folder_type ENUM('photos_documents', 'general') DEFAULT 'photos_documents',
+  visibility ENUM('private', 'public') DEFAULT 'private',
+  storage_provider VARCHAR(50) DEFAULT 'local',
+  cloudinary_public_id VARCHAR(500) NULL,
+  uploaded_by INT UNSIGNED NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_admin_library_files_note FOREIGN KEY (note_id) REFERENCES admin_library_notes(id) ON DELETE CASCADE,
   CONSTRAINT fk_admin_library_files_user FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_admin_library_files_visibility (visibility, uploaded_by, created_at),
   INDEX idx_admin_library_files_name (file_name)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 ALTER TABLE admin_library_files MODIFY COLUMN upload_category ENUM('dicom', 'stl', 'photos_documents', 'general', 'other') NOT NULL DEFAULT 'general';
 ALTER TABLE admin_library_files ADD COLUMN IF NOT EXISTS upload_category_other_label VARCHAR(120) NULL;
 
@@ -744,3 +773,24 @@ ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS is_private TINYINT(1) NO
 ALTER TABLE case_general_notes ADD COLUMN IF NOT EXISTS updated_by BIGINT UNSIGNED NULL;
 
 ALTER TABLE resource_links MODIFY COLUMN entity_type ENUM('case', 'case_note', 'admin_library_note', 'order') NOT NULL;
+
+-- Link files to general notes (nullable — most files won't be attached to a note)
+ALTER TABLE case_files ADD COLUMN IF NOT EXISTS note_id BIGINT UNSIGNED NULL AFTER case_id;
+ALTER TABLE case_files ADD CONSTRAINT fk_case_files_note FOREIGN KEY IF NOT EXISTS (note_id) REFERENCES case_general_notes(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_case_files_note ON case_files (note_id);
+
+-- Ensure message_type column has the right default (Codex may have added it already)
+ALTER TABLE case_client_messages MODIFY COLUMN IF EXISTS message_type ENUM('text', 'image') NOT NULL DEFAULT 'text';
+
+-- Ensure admin_library_files has cloudinary_public_id (for Supabase storage path)
+ALTER TABLE admin_library_files ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(500) NULL;
+
+-- Ensure case_client_messages has all image/attachment columns
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS message_type ENUM('text', 'image') NOT NULL DEFAULT 'text' AFTER body;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(190) NULL AFTER message_type;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_url VARCHAR(700) NULL AFTER attachment_name;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_mime_type VARCHAR(120) NULL AFTER attachment_url;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER attachment_mime_type;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_storage_provider VARCHAR(60) NULL AFTER attachment_size;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS attachment_storage_path VARCHAR(700) NULL AFTER attachment_storage_provider;
+ALTER TABLE case_client_messages ADD COLUMN IF NOT EXISTS session_id BIGINT UNSIGNED NULL AFTER case_id;

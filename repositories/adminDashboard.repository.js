@@ -46,7 +46,7 @@ export const listUsers = async ({ page = 1, perPage = 20, search = "", role = nu
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
           u.id, u.name, u.email, u.phone, u.address, u.role, u.is_active AS isActive, u.chat_enabled AS chatEnabled,
@@ -67,7 +67,7 @@ export const listUsers = async ({ page = 1, perPage = 20, search = "", role = nu
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `SELECT COUNT(*) AS total FROM users ${whereSql}`,
     params,
   );
@@ -79,14 +79,14 @@ export const listUsers = async ({ page = 1, perPage = 20, search = "", role = nu
 };
 
 export const updateUserRole = async (id, role) => {
-  await pool.execute(
+  await pool.query(
     `UPDATE users SET role = :role WHERE id = :id`,
     { id, role },
   );
 };
 
 export const createAdminUser = async ({ name, email, passwordHash, phone = null, address = null, role = "user", isActive = true, chatEnabled = false }) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
         INSERT INTO users (name, email, password_hash, phone, address, role, is_active, chat_enabled)
         VALUES (:name, :email, :passwordHash, :phone, :address, :role, :isActive, :chatEnabled)
@@ -103,7 +103,7 @@ export const createAdminUser = async ({ name, email, passwordHash, phone = null,
       },
     );
   
-    const [rows] = await pool.execute(
+    const [rows] = await pool.query(
       `SELECT id, name, email, phone, address, role, is_active AS isActive, chat_enabled AS chatEnabled, created_at AS createdAt FROM users WHERE id = :id LIMIT 1`,
     { id: result.insertId },
   );
@@ -150,12 +150,12 @@ export const updateAdminUser = async (id, payload) => {
 
   if (!fields.length) return null;
 
-  await pool.execute(
+  await pool.query(
     `UPDATE users SET ${fields.join(", ")} WHERE id = :id`,
     params,
   );
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
       `SELECT id, name, email, phone, address, role, is_active AS isActive, chat_enabled AS chatEnabled, created_at AS createdAt FROM users WHERE id = :id LIMIT 1`,
     { id },
   );
@@ -164,7 +164,7 @@ export const updateAdminUser = async (id, payload) => {
 };
 
 export const deleteAdminUser = async (id) => {
-  await pool.execute(`DELETE FROM users WHERE id = :id`, { id });
+  await pool.query(`DELETE FROM users WHERE id = :id`, { id });
 };
 
 export const getDashboardAnalytics = async (userId) => {
@@ -187,7 +187,7 @@ export const getDashboardAnalytics = async (userId) => {
     [assigneeRows],
     [profitRows],
   ] = await Promise.all([
-    pool.execute(
+    pool.query(
       `
         SELECT
           SUM(CASE WHEN ${caseCondition} THEN 1 ELSE 0 END) AS totalCases,
@@ -202,7 +202,7 @@ export const getDashboardAnalytics = async (userId) => {
         WHERE c.is_archived = 0
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           COUNT(*) AS totalUsers,
@@ -212,7 +212,7 @@ export const getDashboardAnalytics = async (userId) => {
         FROM users
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           COUNT(*) AS totalTasks,
@@ -228,7 +228,7 @@ export const getDashboardAnalytics = async (userId) => {
           AND ${caseCondition}
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           COUNT(*) AS totalMessages,
@@ -237,11 +237,11 @@ export const getDashboardAnalytics = async (userId) => {
         FROM contact_submissions
       `,
     ),
-    pool.execute(
+    pool.query(
       `SELECT COUNT(*) AS unreadNotifications FROM notifications WHERE user_id = :userId AND read_at IS NULL`,
       { userId },
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           s.name AS statusName,
@@ -255,7 +255,7 @@ export const getDashboardAnalytics = async (userId) => {
         ORDER BY s.sort_order ASC, s.name ASC
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT ds.date, COALESCE(created.total, 0) AS total
         FROM (${fourteenDaySeriesSql}) ds
@@ -271,7 +271,7 @@ export const getDashboardAnalytics = async (userId) => {
         ORDER BY ds.date ASC
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT ds.date, COALESCE(created.total, 0) AS total
         FROM (${fourteenDaySeriesSql}) ds
@@ -287,7 +287,7 @@ export const getDashboardAnalytics = async (userId) => {
         ORDER BY ds.date ASC
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT c.id, c.name, c.estimated_completion_date AS dueDate, c.progress_percentage AS progress,
                s.name AS statusName, target.name AS clientName, leader.name AS projectLeaderName, c.created_at AS createdAt
@@ -301,7 +301,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT c.id, c.name, c.target_time AS targetTime, c.contact_phone AS contactPhone,
                c.contact_email AS contactEmail, s.name AS statusName,
@@ -314,7 +314,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT id, contact_name AS name, contact_email AS email, contact_number AS phone,
                scope_of_work AS subject, status, created_at AS createdAt
@@ -323,7 +323,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT id, name, email, role, is_active AS isActive, created_at AS createdAt
         FROM users
@@ -331,7 +331,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT c.id, c.name, c.estimated_completion_date AS dueDate, s.name AS statusName,
                target.name AS clientName, leader.name AS projectLeaderName,
@@ -350,7 +350,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 5
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT t.id, t.title, t.priority, t.status, t.due_date AS dueDate,
                c.id AS caseId, c.name AS caseName, assignee.name AS assigneeName,
@@ -370,7 +370,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT leader.id, leader.name, leader.email, COUNT(c.id) AS activeCases
         FROM cases c
@@ -385,7 +385,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT assignee.id, assignee.name, assignee.email,
                COUNT(t.id) AS openTasks,
@@ -403,7 +403,7 @@ export const getDashboardAnalytics = async (userId) => {
         LIMIT 6
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           COALESCE(SUM(CASE WHEN ${caseCondition} AND ${closedStatusCondition} THEN COALESCE(c.price, 0) ELSE 0 END), 0) AS caseProfit,
@@ -510,7 +510,7 @@ export const getDashboardAnalytics = async (userId) => {
 };
 
 export const getAnalytics = async () => {
-  const [caseRows] = await pool.execute(
+  const [caseRows] = await pool.query(
     `
       SELECT
         s.name AS statusName,
@@ -535,7 +535,7 @@ export const getAnalytics = async () => {
     `,
   );
 
-  const [dailyRows] = await pool.execute(
+  const [dailyRows] = await pool.query(
     `
       SELECT DATE(c.created_at) AS date, COUNT(*) AS count
       FROM cases c
@@ -552,7 +552,7 @@ export const getAnalytics = async () => {
     `,
   );
 
-  const [recentMessageRows] = await pool.execute(
+  const [recentMessageRows] = await pool.query(
     `
       SELECT id, contact_name AS name, contact_email AS email,
              scope_of_work AS subject, status, created_at

@@ -13,6 +13,7 @@
 
 import { createReadStream } from "node:fs";
 import { unlink } from "node:fs/promises";
+import path from "node:path";
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { env } from "../config/env.js";
@@ -76,6 +77,54 @@ const sanitizeFolderKey = (value) => (
     .replace(/^-+|-+$/g, "")
     .slice(0, 90) || `pending-${Date.now()}`
 );
+
+const decodeFileName = (fileName) => {
+  const value = String(fileName || "").trim();
+  if (!value) return "";
+
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const formatUploadDateForName = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Africa/Cairo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+};
+
+const buildDownloadFileName = (fileName, uploadedAt, storagePath) => {
+  const decodedName = decodeFileName(fileName || storagePath?.split("/").pop() || "attachment");
+  const cleanName = cleanUploadDisplayName(decodedName);
+  const parsed = path.parse(cleanName);
+  const uploadDate = formatUploadDateForName(uploadedAt);
+
+  if (!uploadDate) return cleanName;
+
+  return `${parsed.name || "attachment"} - ${uploadDate}${parsed.ext || ""}`;
+};
+
+export const getSupabaseDownloadFileName = (file = {}) => {
+  const storagePath = file.storagePath || file.cloudinaryPublicId || extractSupabaseStoragePath(file.fileUrl);
+  return buildDownloadFileName(
+    file.fileName,
+    file.createdAt || file.uploadedAt || file.updatedAt || null,
+    storagePath,
+  );
+};
 
 // ── Bucket Bootstrap ───────────────────────────────────────────────────────────
 
@@ -154,8 +203,14 @@ export const uploadFileToSupabase = async (caseId, file) => {
 
   console.log("[Supabase] Upload success:", { storagePath });
 
+  // Generate the public URL (works if bucket is public, acts as a stable fallback)
+  const { data: publicData } = client.storage
+    .from(BUCKET_NAME)
+    .getPublicUrl(storagePath);
+
   return {
     supabasePath:      storagePath,
+    publicUrl:         publicData?.publicUrl || null,  // always present (even for private buckets — though not accessible)
     fileUrl:           storagePath,
     fileName:          storedFileName,
     mimeType:          file.mimetype,
@@ -239,16 +294,17 @@ export const extractSupabaseStoragePath = (value) => {
   }
 };
 
-export const createSupabaseSignedDownloadUrl = async (storagePath, fileName, expiresIn = 300) => {
+export const createSupabaseSignedDownloadUrl = async (storagePath, fileName, expiresIn = 300, uploadedAt = null) => {
   const cleanPath = extractSupabaseStoragePath(storagePath);
   if (!cleanPath) return null;
+  const downloadName = buildDownloadFileName(fileName, uploadedAt, cleanPath);
 
   const client = getClient();
   await ensureBucket(client);
   const { data, error } = await client.storage
     .from(BUCKET_NAME)
     .createSignedUrl(cleanPath, expiresIn, {
-      download: fileName || cleanPath.split("/").pop() || "attachment",
+      download: downloadName,
     });
 
   if (error) throw new Error(`[Supabase] Signed URL failed: ${error.message}`);
@@ -256,8 +312,14 @@ export const createSupabaseSignedDownloadUrl = async (storagePath, fileName, exp
 };
 
 export const getSupabaseDownloadUrl = async (file, expiresIn = 300) => {
-  const storagePath = file?.cloudinaryPublicId || file?.storagePath || extractSupabaseStoragePath(file?.fileUrl);
-  const signedUrl = await createSupabaseSignedDownloadUrl(storagePath, file?.fileName, expiresIn);
+  // New rows expose storagePath; cloudinaryPublicId is a legacy alias for the same Supabase path.
+  const storagePath = file?.storagePath || file?.cloudinaryPublicId || extractSupabaseStoragePath(file?.fileUrl);
+  const signedUrl = await createSupabaseSignedDownloadUrl(
+    storagePath,
+    file?.fileName,
+    expiresIn,
+    file?.createdAt || file?.uploadedAt || file?.updatedAt || null,
+  );
   return signedUrl || file?.cloudinarySecureUrl || file?.fileUrl || null;
 };
 

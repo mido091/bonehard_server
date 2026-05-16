@@ -37,14 +37,14 @@ import { ApiError, sendSuccess } from "../utils/apiResponse.js";
 export const stats = async (req, res) => {
   const data = await getAdminStats();
   // Attach unread notification count for this admin user
-  const [unreadRows] = await pool.execute(
+  const [unreadRows] = await pool.query(
     `SELECT COUNT(*) AS count FROM notifications WHERE user_id = :userId AND read_at IS NULL`,
     { userId: req.user.id },
   );
   data.unreadNotifications = Number(unreadRows[0]?.count || 0);
 
   // Attach unread messages count
-  const [unreadMessagesRows] = await pool.execute(
+  const [unreadMessagesRows] = await pool.query(
     `SELECT COUNT(*) AS count FROM contact_submissions WHERE status = 'new'`
   );
   data.unreadMessages = Number(unreadMessagesRows[0]?.count || 0);

@@ -35,6 +35,9 @@ import {
   removeGeneralNoteById,
   updateGeneralNote,
   removeGeneralNote,
+  uploadNoteAttachments,
+  removeNoteAttachment,
+  downloadNoteAttachment,
   createNotesExport,
   createNote,
   createOrderRecord,
@@ -55,6 +58,9 @@ import {
   createGeneralLibraryNote,
   updateGeneralLibraryNote,
   removeGeneralLibraryNote,
+  uploadAdminNoteAttachments,
+  removeAdminNoteAttachment,
+  downloadAdminNoteAttachment,
   globalNotesExports,
   notes,
   notesExports,
@@ -142,6 +148,9 @@ router.get("/notes", validate(listQuerySchema, "query"), asyncHandler(globalNote
 router.post("/notes/general", validate(generalNotePayloadSchema), asyncHandler(createGeneralLibraryNote));
 router.patch("/notes/general/:noteId", validate(z.object({ noteId: z.coerce.number().int().positive() }), "params"), validate(generalNotePayloadSchema), asyncHandler(updateGeneralLibraryNote));
 router.delete("/notes/general/:noteId", validate(z.object({ noteId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeGeneralLibraryNote));
+router.post("/notes/general/:noteId/attachments", validate(z.object({ noteId: z.coerce.number().int().positive() }), "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(uploadAdminNoteAttachments));
+router.get("/notes/general/:noteId/attachments/:fileId/download", validate(z.object({ noteId: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(downloadAdminNoteAttachment));
+router.delete("/notes/general/:noteId/attachments/:fileId", validate(z.object({ noteId: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeAdminNoteAttachment));
 router.patch("/notes/:noteId", validate(z.object({ noteId: z.coerce.number().int().positive() }), "params"), validate(generalNotePayloadSchema), asyncHandler(updateGeneralNoteById));
 router.delete("/notes/:noteId", validate(z.object({ noteId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeGeneralNoteById));
 router.get("/notes-export", validate(listQuerySchema, "query"), asyncHandler(globalNotesExports));
@@ -238,6 +247,10 @@ router.get("/:id/general-notes", validate(idParamSchema, "params"), validate(lis
 router.post("/:id/general-notes", validate(idParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(createGeneralNote));
 router.patch("/:id/general-notes/:noteId", validate(z.object({ id: z.coerce.number().int().positive(), noteId: z.coerce.number().int().positive() }), "params"), validate(generalNotePayloadSchema), asyncHandler(updateGeneralNote));
 router.delete("/:id/general-notes/:noteId", validate(z.object({ id: z.coerce.number().int().positive(), noteId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeGeneralNote));
+// Note file attachments — upload (multipart) and delete
+router.post("/:id/general-notes/:noteId/attachments", validate(z.object({ id: z.coerce.number().int().positive(), noteId: z.coerce.number().int().positive() }), "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(uploadNoteAttachments));
+router.get("/:id/general-notes/:noteId/attachments/:fileId/download", validate(z.object({ id: z.coerce.number().int().positive(), noteId: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(downloadNoteAttachment));
+router.delete("/:id/general-notes/:noteId/attachments/:fileId", validate(z.object({ id: z.coerce.number().int().positive(), noteId: z.coerce.number().int().positive(), fileId: z.coerce.number().int().positive() }), "params"), asyncHandler(removeNoteAttachment));
 router.get("/:id/notes-export", validate(idParamSchema, "params"), validate(listQuerySchema, "query"), asyncHandler(notesExports));
 router.post("/:id/notes-export", validate(idParamSchema, "params"), validate(exportPayloadSchema), asyncHandler(createNotesExport));
 router.get("/:id/client-talk", validate(idParamSchema, "params"), validate(listQuerySchema, "query"), asyncHandler(caseClientTalk));

@@ -89,7 +89,7 @@ export const listTasksByCase = async (caseId, filters = {}) => {
 
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${taskSelect}
       FROM case_tasks t
@@ -102,7 +102,7 @@ export const listTasksByCase = async (caseId, filters = {}) => {
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `SELECT COUNT(*) AS total FROM case_tasks t ${whereSql}`,
     params,
   );
@@ -184,7 +184,7 @@ export const listTasksGlobal = async (filters = {}, scope = "all", userId = null
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${taskSelect}, c.name AS caseName
       FROM case_tasks t
@@ -198,7 +198,7 @@ export const listTasksGlobal = async (filters = {}, scope = "all", userId = null
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `SELECT COUNT(*) AS total FROM case_tasks t JOIN cases c ON c.id = t.case_id ${whereSql}`,
     params,
   );
@@ -214,7 +214,7 @@ export const listTasksGlobal = async (filters = {}, scope = "all", userId = null
 };
 
 export const createTask = async (caseId, data, connection = pool) => {
-  const [result] = await connection.execute(
+  const [result] = await connection.query(
     `
       INSERT INTO case_tasks (
         case_id, title, description, priority, status, private_task,
@@ -270,16 +270,16 @@ export const updateTask = async (caseId, taskId, data, connection = pool) => {
 
   if (!fields.length) return;
 
-  await connection.execute(
+  await connection.query(
     `UPDATE case_tasks SET ${fields.join(", ")} WHERE id = :taskId AND case_id = :caseId`,
     params,
   );
 };
 
 export const replaceTaskWatchers = async (taskId, watcherIds = [], connection = pool) => {
-  await connection.execute(`DELETE FROM case_task_watchers WHERE task_id = :taskId`, { taskId });
+  await connection.query(`DELETE FROM case_task_watchers WHERE task_id = :taskId`, { taskId });
   for (const userId of watcherIds) {
-    await connection.execute(
+    await connection.query(
       `INSERT INTO case_task_watchers (task_id, user_id) VALUES (:taskId, :userId)`,
       { taskId, userId },
     );
@@ -287,7 +287,7 @@ export const replaceTaskWatchers = async (taskId, watcherIds = [], connection = 
 };
 
 export const deleteTask = async (caseId, taskId, connection = pool) => {
-  await connection.execute(
+  await connection.query(
     `DELETE FROM case_tasks WHERE id = :taskId AND case_id = :caseId`,
     { caseId, taskId },
   );

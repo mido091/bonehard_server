@@ -25,7 +25,7 @@ export const getUserOrderDashboardAnalytics = async (userId) => {
     [recentRows],
     [trendRows],
   ] = await Promise.all([
-    pool.execute(
+    pool.query(
       `
         SELECT
           COUNT(DISTINCT c.id) AS totalOrders,
@@ -42,7 +42,7 @@ export const getUserOrderDashboardAnalytics = async (userId) => {
       `,
       { userId },
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           c.id,
@@ -63,7 +63,7 @@ export const getUserOrderDashboardAnalytics = async (userId) => {
       `,
       { userId },
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT ds.date, COALESCE(created.total, 0) AS total
         FROM (${sevenDaySeriesSql}) ds

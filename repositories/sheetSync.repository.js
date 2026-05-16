@@ -23,7 +23,7 @@ const sheetUserLabelSql = `
 
 export const listSheetSyncOptions = async () => {
   const [[clients], [leaders]] = await Promise.all([
-    pool.execute(
+    pool.query(
       `
         SELECT id, ${sheetUserLabelSql} AS label
         FROM users
@@ -32,7 +32,7 @@ export const listSheetSyncOptions = async () => {
         ORDER BY name ASC, id ASC
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT id, ${sheetUserLabelSql} AS label
         FROM users
@@ -77,7 +77,7 @@ const normalizeSheetCaseRows = (rows) => rows.map((row) => ({
 
 export const getSheetDashboardSummary = async () => {
   const [[summaryRows], [paymentRows]] = await Promise.all([
-    pool.execute(
+    pool.query(
       `
         SELECT
           SUM(CASE WHEN ${caseCondition} THEN 1 ELSE 0 END) AS totalCases,
@@ -92,7 +92,7 @@ export const getSheetDashboardSummary = async () => {
         WHERE c.is_archived = 0
       `,
     ),
-    pool.execute(
+    pool.query(
       `
         SELECT
           COUNT(*) AS totalPayments,
@@ -111,7 +111,7 @@ export const getSheetDashboardSummary = async () => {
 };
 
 export const listDashboardCasesForSheet = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
         c.id AS caseId,
@@ -154,7 +154,7 @@ export const listDashboardCasesForSheet = async () => {
 };
 
 export const listDashboardOrdersForSheet = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
         c.id AS orderId,
@@ -187,7 +187,7 @@ export const listDashboardOrdersForSheet = async () => {
 };
 
 export const listDashboardPaymentsForSheet = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
         cps.id AS paymentId,
@@ -216,7 +216,7 @@ export const listDashboardPaymentsForSheet = async () => {
 };
 
 export const getSyncableCaseById = async (caseId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT
         c.id,
@@ -238,7 +238,7 @@ export const getSyncableCaseById = async (caseId) => {
 };
 
 export const deleteCaseFromSheet = async (caseId) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       DELETE c
       FROM cases c
@@ -254,7 +254,7 @@ export const deleteCaseFromSheet = async (caseId) => {
 };
 
 export const getCaseStatusByName = async (statusName) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id, name
       FROM case_statuses
@@ -285,7 +285,7 @@ export const getSheetUserIdByLabel = async (label, allowedRoles) => {
   const roleParams = Object.fromEntries(roles.map((role, index) => [`role_${index}`, role]));
   const roleSql = roles.map((_, index) => `:role_${index}`).join(", ");
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id
       FROM users
@@ -308,7 +308,7 @@ export const getSheetUserIdByLabel = async (label, allowedRoles) => {
 };
 
 export const getDefaultSheetCaseStatus = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id, name
       FROM case_statuses
@@ -321,7 +321,7 @@ export const getDefaultSheetCaseStatus = async () => {
 };
 
 export const getSheetCaseCreatorUserId = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT id
       FROM users
@@ -352,7 +352,7 @@ export const createCaseFromSheet = async ({
   dueDate,
   createdBy,
 }) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO cases (
         name,
@@ -513,7 +513,7 @@ export const updateCaseFromSheet = async ({
     return getSyncableCaseById(caseId);
   }
 
-  await pool.execute(
+  await pool.query(
     `
       UPDATE cases
       SET ${fields.join(", ")}

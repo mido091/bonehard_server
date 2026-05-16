@@ -10,9 +10,9 @@ export const orderParamSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
 
-// Body: send message
+// Body: send message — body is optional when an image is attached
 export const sendMessageSchema = z.object({
-  body: z.string().trim().min(1, "Message cannot be empty").max(4000),
+  body: z.string().trim().max(4000).optional().default(""),
 });
 
 // Query: archive list

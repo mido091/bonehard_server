@@ -14,7 +14,7 @@ const sql = `
 `;
 
 try {
-  await pool.execute(sql);
+  await pool.query(sql);
   console.log('✅  password_resets table created (or already exists).');
   process.exit(0);
 } catch (err) {

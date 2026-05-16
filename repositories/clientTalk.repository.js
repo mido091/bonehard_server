@@ -17,23 +17,61 @@
 import { pool } from "../config/db.js";
 import { toLimitOffsetSql } from "../utils/db.js";
 
-// ─── Session helpers ──────────────────────────────────────────────────────────
+const ENTRY_CONTEXTS = new Set(["user-order", "admin-order", "admin-case"]);
+let entryContextColumnReady = null;
 
-/**
- * Returns a full session row by primary key.
- */
-export const getSessionById = async (sessionId) => {
-  const [[row]] = await pool.execute(
-    `SELECT
+const normalizeEntryContext = (value) =>
+  ENTRY_CONTEXTS.has(value) ? value : "user-order";
+
+export const ensureClientTalkEntryContextColumn = async () => {
+  if (entryContextColumnReady) return entryContextColumnReady;
+
+  entryContextColumnReady = (async () => {
+    const [[column]] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'client_talk_sessions'
+         AND COLUMN_NAME = 'entry_context'`,
+    );
+
+    if (Number(column?.total || 0) === 0) {
+      await pool.query(
+        `ALTER TABLE client_talk_sessions
+         ADD COLUMN entry_context VARCHAR(32) NOT NULL DEFAULT 'user-order' AFTER status`,
+      );
+      await pool.query(
+        `ALTER TABLE client_talk_sessions
+         ADD INDEX idx_ct_entry_context (entry_context)`,
+      );
+    }
+  })();
+
+  return entryContextColumnReady;
+};
+
+const sessionSelectColumns = `
        s.id, s.order_id AS orderId, s.user_id AS userId,
        s.assigned_to AS assignedTo, s.status,
+       s.entry_context AS entryContext,
        s.requested_at AS requestedAt, s.accepted_at AS acceptedAt,
        s.ended_at AS endedAt, s.ended_by AS endedBy,
        s.last_message_at AS lastMessageAt,
        s.created_at AS createdAt, s.updated_at AS updatedAt,
        u.name AS userName, u.email AS userEmail,
        a.name AS assignedName,
-       c.name AS orderName
+       c.name AS orderName`;
+
+// ─── Session helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Returns a full session row by primary key.
+ */
+export const getSessionById = async (sessionId) => {
+  await ensureClientTalkEntryContextColumn();
+  const [[row]] = await pool.query(
+    `SELECT
+       ${sessionSelectColumns}
      FROM client_talk_sessions s
      LEFT JOIN users u ON u.id = s.user_id
      LEFT JOIN users a ON a.id = s.assigned_to
@@ -50,14 +88,10 @@ export const getSessionById = async (sessionId) => {
  * Returns null if no such session exists or the last one has ended.
  */
 export const getOpenSessionByOrderForUser = async (orderId, userId) => {
-  const [[row]] = await pool.execute(
+  await ensureClientTalkEntryContextColumn();
+  const [[row]] = await pool.query(
     `SELECT
-       s.id, s.order_id AS orderId, s.user_id AS userId,
-       s.assigned_to AS assignedTo, s.status,
-       s.requested_at AS requestedAt, s.accepted_at AS acceptedAt,
-       s.ended_at AS endedAt, s.ended_by AS endedBy,
-       s.last_message_at AS lastMessageAt,
-       u.name AS userName, a.name AS assignedName, c.name AS orderName
+       ${sessionSelectColumns}
      FROM client_talk_sessions s
      LEFT JOIN users u ON u.id = s.user_id
      LEFT JOIN users a ON a.id = s.assigned_to
@@ -76,11 +110,12 @@ export const getOpenSessionByOrderForUser = async (orderId, userId) => {
  * Either returns the existing open session for this order/user, or creates
  * a fresh active one. Prevents duplicate open conversations.
  */
-export const createOrReuseSession = async (orderId, userId) => {
+export const createOrReuseSession = async (orderId, userId, entryContext = "user-order") => {
+  await ensureClientTalkEntryContextColumn();
   const existing = await getOpenSessionByOrderForUser(orderId, userId);
   if (existing) {
     if (existing.status === "pending") {
-      await pool.execute(
+      await pool.query(
         `UPDATE client_talk_sessions SET status = 'active' WHERE id = :sessionId`,
         { sessionId: existing.id },
       );
@@ -89,18 +124,19 @@ export const createOrReuseSession = async (orderId, userId) => {
     return { ...existing, wasReusedOpenSession: true };
   }
 
-  const [result] = await pool.execute(
-    `INSERT INTO client_talk_sessions (order_id, user_id, status)
-     VALUES (:orderId, :userId, 'active')`,
-    { orderId, userId },
+  const [result] = await pool.query(
+    `INSERT INTO client_talk_sessions (order_id, user_id, status, entry_context)
+     VALUES (:orderId, :userId, 'active', :entryContext)`,
+    { orderId, userId, entryContext: normalizeEntryContext(entryContext) },
   );
 
   const created = await getSessionById(result.insertId);
   return { ...created, wasReusedOpenSession: false };
 };
 
-export const createOrReuseSessionForStaff = async (orderId, assigneeId) => {
-  const [[orderRow]] = await pool.execute(
+export const createOrReuseSessionForStaff = async (orderId, assigneeId, entryContext = "admin-order") => {
+  await ensureClientTalkEntryContextColumn();
+  const [[orderRow]] = await pool.query(
     `SELECT id, target_id AS userId
      FROM cases
      WHERE id = :orderId
@@ -113,7 +149,7 @@ export const createOrReuseSessionForStaff = async (orderId, assigneeId) => {
   const existing = await getOpenSessionByOrderForUser(orderId, orderRow.userId);
   if (existing) {
     if (!existing.assignedTo) {
-      await pool.execute(
+      await pool.query(
         `UPDATE client_talk_sessions
          SET status = 'active',
              assigned_to = :assigneeId,
@@ -134,10 +170,10 @@ export const createOrReuseSessionForStaff = async (orderId, assigneeId) => {
     };
   }
 
-  const [result] = await pool.execute(
-    `INSERT INTO client_talk_sessions (order_id, user_id, assigned_to, status, accepted_at)
-     VALUES (:orderId, :userId, :assigneeId, 'active', NOW())`,
-    { orderId, userId: orderRow.userId, assigneeId },
+  const [result] = await pool.query(
+    `INSERT INTO client_talk_sessions (order_id, user_id, assigned_to, status, accepted_at, entry_context)
+     VALUES (:orderId, :userId, :assigneeId, 'active', NOW(), :entryContext)`,
+    { orderId, userId: orderRow.userId, assigneeId, entryContext: normalizeEntryContext(entryContext) },
   );
 
   return {
@@ -154,7 +190,7 @@ export const createOrReuseSessionForStaff = async (orderId, assigneeId) => {
  * @returns {object|null} Updated session row, an already-owned active row, or null if someone else claimed it.
  */
 export const acceptSession = async (sessionId, assigneeId) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `UPDATE client_talk_sessions
      SET status      = 'active',
          assigned_to = :assigneeId,
@@ -190,7 +226,7 @@ export const acceptSession = async (sessionId, assigneeId) => {
  * @returns {object|null} Updated session row, or null if not active.
  */
 export const endSession = async (sessionId, endedBy) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `UPDATE client_talk_sessions
      SET status   = 'ended',
          ended_by = :endedBy,
@@ -209,13 +245,22 @@ export const endSession = async (sessionId, endedBy) => {
 
 /**
  * Returns paginated messages for a session in chronological order.
+ * Returns message_type and attachment fields so images render correctly.
  */
 export const listSessionMessages = async (sessionId, query = {}) => {
   const paging = toLimitOffsetSql(query);
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT m.id, m.session_id AS sessionId, m.sender_id AS senderId,
-            u.name AS senderName, m.body, m.created_at AS createdAt
+            u.name AS senderName,
+            m.body, m.message_type AS messageType,
+            m.attachment_name AS attachmentName,
+            m.attachment_url AS attachmentUrl,
+            m.attachment_mime_type AS attachmentMimeType,
+            m.attachment_size AS attachmentSize,
+            m.attachment_storage_provider AS attachmentStorageProvider,
+            m.attachment_storage_path AS attachmentStoragePath,
+            m.created_at AS createdAt
      FROM case_client_messages m
      LEFT JOIN users u ON u.id = m.sender_id
      WHERE m.session_id = :sessionId
@@ -232,30 +277,73 @@ export const listSessionMessages = async (sessionId, query = {}) => {
 
 /**
  * Inserts a new message linked to the session and bumps last_message_at.
+ *
+ * @param {number}      sessionId      - The session this message belongs to.
+ * @param {number}      senderId       - The user sending the message.
+ * @param {string}      body           - Text body (may be empty for image-only messages).
+ * @param {object|null} attachmentData - Optional image attachment metadata.
+ * @param {string}      attachmentData.attachmentName
+ * @param {string}      attachmentData.attachmentUrl     - Supabase signed path
+ * @param {string}      attachmentData.attachmentMimeType
+ * @param {number}      attachmentData.attachmentSize
+ * @param {string}      attachmentData.attachmentStorageProvider
+ * @param {string}      attachmentData.attachmentStoragePath
  */
-export const createSessionMessage = async (sessionId, senderId, body) => {
+export const createSessionMessage = async (sessionId, senderId, body, attachmentData = null) => {
   // Look up order_id (case_id) for this session to satisfy the NOT NULL constraint
-  const [[sessionRow]] = await pool.execute(
+  const [[sessionRow]] = await pool.query(
     `SELECT order_id AS caseId FROM client_talk_sessions WHERE id = :sessionId LIMIT 1`,
     { sessionId },
   );
   if (!sessionRow) throw new Error("Session not found");
 
-  const [result] = await pool.execute(
-    `INSERT INTO case_client_messages (case_id, session_id, sender_id, body)
-     VALUES (:caseId, :sessionId, :senderId, :body)`,
-    { caseId: sessionRow.caseId, sessionId, senderId, body },
+  const messageType = attachmentData ? "image" : "text";
+
+  const [result] = await pool.query(
+    `INSERT INTO case_client_messages (
+       case_id, session_id, sender_id, body,
+       message_type,
+       attachment_name, attachment_url, attachment_mime_type,
+       attachment_size, attachment_storage_provider, attachment_storage_path
+     )
+     VALUES (
+       :caseId, :sessionId, :senderId, :body,
+       :messageType,
+       :attachmentName, :attachmentUrl, :attachmentMimeType,
+       :attachmentSize, :attachmentStorageProvider, :attachmentStoragePath
+     )`,
+    {
+      caseId:                  sessionRow.caseId,
+      sessionId,
+      senderId,
+      body:                    body || "",
+      messageType,
+      attachmentName:          attachmentData?.attachmentName          || null,
+      attachmentUrl:           attachmentData?.attachmentUrl           || null,
+      attachmentMimeType:      attachmentData?.attachmentMimeType      || null,
+      attachmentSize:          attachmentData?.attachmentSize          || 0,
+      attachmentStorageProvider: attachmentData?.attachmentStorageProvider || null,
+      attachmentStoragePath:   attachmentData?.attachmentStoragePath   || null,
+    },
   );
 
   // Keep last_message_at fresh for archive sorting
-  await pool.execute(
+  await pool.query(
     `UPDATE client_talk_sessions SET last_message_at = NOW() WHERE id = :sessionId`,
     { sessionId },
   );
 
-  const [[row]] = await pool.execute(
+  const [[row]] = await pool.query(
     `SELECT m.id, m.session_id AS sessionId, m.sender_id AS senderId,
-            u.name AS senderName, m.body, m.created_at AS createdAt
+            u.name AS senderName,
+            m.body, m.message_type AS messageType,
+            m.attachment_name AS attachmentName,
+            m.attachment_url AS attachmentUrl,
+            m.attachment_mime_type AS attachmentMimeType,
+            m.attachment_size AS attachmentSize,
+            m.attachment_storage_provider AS attachmentStorageProvider,
+            m.attachment_storage_path AS attachmentStoragePath,
+            m.created_at AS createdAt
      FROM case_client_messages m
      LEFT JOIN users u ON u.id = m.sender_id
      WHERE m.id = :id
@@ -272,6 +360,7 @@ export const createSessionMessage = async (sessionId, senderId, body) => {
  * Lists all sessions for the admin archive with optional filters.
  */
 export const listArchiveSessions = async (query = {}) => {
+  await ensureClientTalkEntryContextColumn();
   const paging = toLimitOffsetSql(query);
 
   // Build dynamic WHERE clauses. We keep a status-free copy for accurate status summary cards.
@@ -323,15 +412,9 @@ export const listArchiveSessions = async (query = {}) => {
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const summaryWhere = summaryConditions.length ? `WHERE ${summaryConditions.join(" AND ")}` : "";
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT
-       s.id, s.order_id AS orderId, s.user_id AS userId,
-       s.assigned_to AS assignedTo, s.status,
-       s.requested_at AS requestedAt, s.accepted_at AS acceptedAt,
-       s.ended_at AS endedAt, s.last_message_at AS lastMessageAt,
-       u.name AS userName, u.email AS userEmail,
-       a.name AS assignedName,
-       c.name AS orderName
+       ${sessionSelectColumns}
      FROM client_talk_sessions s
      LEFT JOIN users u ON u.id = s.user_id
      LEFT JOIN users a ON a.id = s.assigned_to
@@ -342,7 +425,7 @@ export const listArchiveSessions = async (query = {}) => {
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `SELECT COUNT(*) AS total
      FROM client_talk_sessions s
      LEFT JOIN users u ON u.id = s.user_id
@@ -351,7 +434,7 @@ export const listArchiveSessions = async (query = {}) => {
     params,
   );
 
-  const [statusRows] = await pool.execute(
+  const [statusRows] = await pool.query(
     `SELECT s.status, COUNT(*) AS total
      FROM client_talk_sessions s
      LEFT JOIN users u ON u.id = s.user_id
@@ -379,14 +462,21 @@ export const listArchiveSessions = async (query = {}) => {
 
 /**
  * Returns a single session with all its messages for the archive detail view.
+ * Includes attachment fields so images render in the archive transcript.
  */
 export const getArchiveSessionDetail = async (sessionId) => {
   const session = await getSessionById(sessionId);
   if (!session) return null;
 
-  const [messages] = await pool.execute(
+  const [messages] = await pool.query(
     `SELECT m.id, m.session_id AS sessionId, m.sender_id AS senderId,
-            u.name AS senderName, m.body, m.created_at AS createdAt
+            u.name AS senderName,
+            m.body, m.message_type AS messageType,
+            m.attachment_name AS attachmentName,
+            m.attachment_url AS attachmentUrl,
+            m.attachment_mime_type AS attachmentMimeType,
+            m.attachment_size AS attachmentSize,
+            m.created_at AS createdAt
      FROM case_client_messages m
      LEFT JOIN users u ON u.id = m.sender_id
      WHERE m.session_id = :sessionId
@@ -406,7 +496,7 @@ export const deleteArchiveSession = async (sessionId) => {
   try {
     await connection.beginTransaction();
 
-    const [[session]] = await connection.execute(
+    const [[session]] = await connection.query(
       `SELECT id FROM client_talk_sessions WHERE id = :sessionId LIMIT 1`,
       { sessionId },
     );
@@ -416,17 +506,17 @@ export const deleteArchiveSession = async (sessionId) => {
       return false;
     }
 
-    await connection.execute(
+    await connection.query(
       `DELETE FROM case_client_messages WHERE session_id = :sessionId`,
       { sessionId },
     );
 
-    await connection.execute(
+    await connection.query(
       `DELETE FROM notifications WHERE data_json LIKE :sessionPattern`,
       { sessionPattern: `%"sessionId":${sessionId}%` },
     );
 
-    await connection.execute(
+    await connection.query(
       `DELETE FROM client_talk_sessions WHERE id = :sessionId`,
       { sessionId },
     );
@@ -450,7 +540,7 @@ export const dismissOtherSessionNotifications = async (sessionId, acceptedByUser
   const sessionPattern = `%"sessionId":${sessionId}%`;
 
   // Find target notifications before deleting them so we can broadcast deletion to specific users
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT id, user_id AS userId FROM notifications
      WHERE user_id != :acceptedByUserId
        AND data_json LIKE :sessionPattern`,
@@ -459,7 +549,7 @@ export const dismissOtherSessionNotifications = async (sessionId, acceptedByUser
 
   if (rows.length > 0) {
     // Actually delete them from the database to clean up the bell dropdown completely
-    await pool.execute(
+    await pool.query(
       `DELETE FROM notifications
        WHERE user_id != :acceptedByUserId
          AND data_json LIKE :sessionPattern`,
@@ -484,10 +574,13 @@ export const dismissOtherSessionNotifications = async (sessionId, acceptedByUser
  * Checks whether a user is allowed to access a specific session's messages/channel.
  * - The session owner (user) is always allowed.
  * - The assigned admin/assistant is allowed.
+ * - Any admin/assistant may inspect an unassigned open session so they can
+ *   claim it from the notification request modal.
  * - Admin role can access via the archive API but not the live Pusher channel.
  */
 export const userCanAccessSession = async (sessionId, user) => {
-  const [[row]] = await pool.execute(
+  await ensureClientTalkEntryContextColumn();
+  const [[row]] = await pool.query(
     `SELECT user_id AS userId, assigned_to AS assignedTo, status
      FROM client_talk_sessions
      WHERE id = :sessionId
@@ -499,7 +592,68 @@ export const userCanAccessSession = async (sessionId, user) => {
 
   if (Number(row.userId) === Number(user.id)) return true;
   if (row.assignedTo && Number(row.assignedTo) === Number(user.id)) return true;
-  if (["admin", "assistant"].includes(user.role) && row.status === "active") return true;
+  if (
+    !row.assignedTo &&
+    ["admin", "assistant"].includes(user.role) &&
+    ["pending", "active"].includes(row.status)
+  ) {
+    return true;
+  }
 
   return false;
+};
+
+export const listRecordSessionsForUser = async (orderId, userId) => {
+  await ensureClientTalkEntryContextColumn();
+  const [rows] = await pool.query(
+    `SELECT
+       ${sessionSelectColumns}
+     FROM client_talk_sessions s
+     LEFT JOIN users u ON u.id = s.user_id
+     LEFT JOIN users a ON a.id = s.assigned_to
+     LEFT JOIN cases c ON c.id = s.order_id
+     WHERE s.order_id = :orderId
+       AND s.user_id = :userId
+     ORDER BY COALESCE(s.last_message_at, s.requested_at) DESC, s.id DESC`,
+    { orderId, userId },
+  );
+  return rows;
+};
+
+export const listRecordSessionsForStaff = async (orderId) => {
+  await ensureClientTalkEntryContextColumn();
+  const [rows] = await pool.query(
+    `SELECT
+       ${sessionSelectColumns}
+     FROM client_talk_sessions s
+     LEFT JOIN users u ON u.id = s.user_id
+     LEFT JOIN users a ON a.id = s.assigned_to
+     LEFT JOIN cases c ON c.id = s.order_id
+     WHERE s.order_id = :orderId
+     ORDER BY COALESCE(s.last_message_at, s.requested_at) DESC, s.id DESC`,
+    { orderId },
+  );
+  return rows;
+};
+
+export const getRecordSessionDetailForUser = async (orderId, sessionId, userId) => {
+  await ensureClientTalkEntryContextColumn();
+  const session = await getSessionById(sessionId);
+  if (!session) return null;
+  if (Number(session.orderId) !== Number(orderId) || Number(session.userId) !== Number(userId)) {
+    return null;
+  }
+
+  const result = await listSessionMessages(sessionId, { page: 1, perPage: 100 });
+  return { ...session, messages: result.rows };
+};
+
+export const getRecordSessionDetailForStaff = async (orderId, sessionId) => {
+  await ensureClientTalkEntryContextColumn();
+  const session = await getSessionById(sessionId);
+  if (!session) return null;
+  if (Number(session.orderId) !== Number(orderId)) return null;
+
+  const result = await listSessionMessages(sessionId, { page: 1, perPage: 100 });
+  return { ...session, messages: result.rows };
 };

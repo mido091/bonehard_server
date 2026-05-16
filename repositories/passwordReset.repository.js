@@ -7,12 +7,12 @@ import { pool } from '../config/db.js';
  */
 export const createPasswordReset = async ({ email, otpHash, expiresAt }) => {
   // Invalidate previous OTPs for this email before inserting the new one
-  await pool.execute(
+  await pool.query(
     `UPDATE password_resets SET used = 1 WHERE email = :email AND used = 0`,
     { email },
   );
 
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `INSERT INTO password_resets (email, otp_hash, expires_at)
      VALUES (:email, :otpHash, :expiresAt)`,
     { email, otpHash, expiresAt },
@@ -25,7 +25,7 @@ export const createPasswordReset = async ({ email, otpHash, expiresAt }) => {
  * Returns the latest valid (unused, non-expired) reset record for an email.
  */
 export const findValidReset = async (email) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT id, email, otp_hash AS otpHash, expires_at AS expiresAt
      FROM password_resets
      WHERE email = :email
@@ -43,7 +43,7 @@ export const findValidReset = async (email) => {
  * Marks a specific reset record as used (consumed) after a successful reset.
  */
 export const markResetUsed = async (id) => {
-  await pool.execute(
+  await pool.query(
     `UPDATE password_resets SET used = 1 WHERE id = :id`,
     { id },
   );
@@ -54,7 +54,7 @@ export const markResetUsed = async (id) => {
  * Called opportunistically — failures are non-fatal.
  */
 export const purgeStaleResets = async () => {
-  await pool.execute(
+  await pool.query(
     `DELETE FROM password_resets
      WHERE used = 1 OR expires_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
   );

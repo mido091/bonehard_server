@@ -20,7 +20,7 @@ export const normalizeChatPaymentSettings = (value = {}) => ({
 });
 
 export const getChatPaymentSettings = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT setting_value AS settingValue FROM case_system_settings WHERE setting_key = :key LIMIT 1`,
     { key: CHAT_PAYMENT_SETTINGS_KEY },
   );
@@ -32,7 +32,7 @@ export const getChatPaymentSettings = async () => {
 
 export const saveChatPaymentSettings = async (settings) => {
   const normalized = normalizeChatPaymentSettings(settings);
-  await pool.execute(
+  await pool.query(
     `
       INSERT INTO case_system_settings (setting_key, setting_value)
       VALUES (:key, :value)
@@ -83,7 +83,7 @@ export const listChatPaymentSubmissions = async ({ page = 1, perPage = 20, statu
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${submissionSelect}
       FROM chat_payment_submissions cps
@@ -96,7 +96,7 @@ export const listChatPaymentSubmissions = async ({ page = 1, perPage = 20, statu
     params,
   );
 
-  const [countRows] = await pool.execute(
+  const [countRows] = await pool.query(
     `
       SELECT COUNT(*) AS total
       FROM chat_payment_submissions cps
@@ -110,7 +110,7 @@ export const listChatPaymentSubmissions = async ({ page = 1, perPage = 20, statu
 };
 
 export const getLatestChatPaymentSubmissionForUser = async (userId) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${submissionSelect}
       FROM chat_payment_submissions cps
@@ -126,7 +126,7 @@ export const getLatestChatPaymentSubmissionForUser = async (userId) => {
 };
 
 export const getChatPaymentSubmissionById = async (id) => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT ${submissionSelect}
       FROM chat_payment_submissions cps
@@ -141,7 +141,7 @@ export const getChatPaymentSubmissionById = async (id) => {
 };
 
 export const createChatPaymentSubmission = async (payload) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO chat_payment_submissions (
         user_id, transfer_phone, amount, currency, proof_file_name, proof_file_url,
@@ -158,7 +158,7 @@ export const createChatPaymentSubmission = async (payload) => {
 };
 
 export const reviewChatPaymentSubmission = async ({ id, status, reviewerId, reviewNote = null }) => {
-  await pool.execute(
+  await pool.query(
     `
       UPDATE chat_payment_submissions
       SET status = :status,
@@ -173,7 +173,7 @@ export const reviewChatPaymentSubmission = async ({ id, status, reviewerId, revi
 };
 
 export const setUserChatEnabled = async (userId, enabled) => {
-  await pool.execute(
+  await pool.query(
     `UPDATE users SET chat_enabled = :enabled WHERE id = :userId`,
     { userId, enabled: enabled ? 1 : 0 },
   );

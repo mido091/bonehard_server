@@ -44,17 +44,17 @@ const mapRecipient = (row) => ({
 });
 
 export const getSiteSettings = async () => {
-  const [[settingsRow]] = await pool.execute("SELECT * FROM site_settings WHERE id = 1 LIMIT 1");
+  const [[settingsRow]] = await pool.query("SELECT * FROM site_settings WHERE id = 1 LIMIT 1");
   return mapSettings(settingsRow);
 };
 
 export const getRawSiteSettings = async () => {
-  const [[row]] = await pool.execute("SELECT * FROM site_settings WHERE id = 1 LIMIT 1");
+  const [[row]] = await pool.query("SELECT * FROM site_settings WHERE id = 1 LIMIT 1");
   return row || null;
 };
 
 export const updateSiteSettings = async (payload, userId) => {
-  await pool.execute(
+  await pool.query(
     `
       UPDATE site_settings
       SET
@@ -98,17 +98,17 @@ export const updateSiteSettings = async (payload, userId) => {
 
 export const listSocialLinks = async ({ activeOnly = false } = {}) => {
   const where = activeOnly ? "WHERE is_active = 1" : "";
-  const [rows] = await pool.execute(`SELECT * FROM site_social_links ${where} ORDER BY sort_order ASC, id ASC`);
+  const [rows] = await pool.query(`SELECT * FROM site_social_links ${where} ORDER BY sort_order ASC, id ASC`);
   return rows.map(mapSocial);
 };
 
 export const getSocialLinkById = async (id) => {
-  const [[row]] = await pool.execute("SELECT * FROM site_social_links WHERE id = :id LIMIT 1", { id });
+  const [[row]] = await pool.query("SELECT * FROM site_social_links WHERE id = :id LIMIT 1", { id });
   return row ? mapSocial(row) : null;
 };
 
 export const createSocialLink = async (payload) => {
-  await pool.execute(
+  await pool.query(
     `
       INSERT INTO site_social_links
         (label, type, target, icon_url, icon_public_id, icon_resource_type, icon_original_name, sort_order, is_active)
@@ -121,7 +121,7 @@ export const createSocialLink = async (payload) => {
 };
 
 export const updateSocialLink = async (id, payload) => {
-  await pool.execute(
+  await pool.query(
     `
       UPDATE site_social_links
       SET
@@ -142,18 +142,18 @@ export const updateSocialLink = async (id, payload) => {
 };
 
 export const deleteSocialLink = async (id) => {
-  await pool.execute("DELETE FROM site_social_links WHERE id = :id", { id });
+  await pool.query("DELETE FROM site_social_links WHERE id = :id", { id });
   return listSocialLinks();
 };
 
 export const listContactRecipients = async ({ activeOnly = false } = {}) => {
   const where = activeOnly ? "WHERE is_active = 1" : "";
-  const [rows] = await pool.execute(`SELECT * FROM contact_recipients ${where} ORDER BY id ASC`);
+  const [rows] = await pool.query(`SELECT * FROM contact_recipients ${where} ORDER BY id ASC`);
   return rows.map(mapRecipient);
 };
 
 export const createContactRecipient = async (payload) => {
-  await pool.execute(
+  await pool.query(
     "INSERT INTO contact_recipients (label, email, is_active) VALUES (:label, :email, :isActive)",
     {
       label: payload.label ?? null,
@@ -165,7 +165,7 @@ export const createContactRecipient = async (payload) => {
 };
 
 export const updateContactRecipient = async (id, payload) => {
-  await pool.execute(
+  await pool.query(
     "UPDATE contact_recipients SET label = :label, email = :email, is_active = :isActive WHERE id = :id",
     {
       id,
@@ -178,12 +178,12 @@ export const updateContactRecipient = async (id, payload) => {
 };
 
 export const deleteContactRecipient = async (id) => {
-  await pool.execute("DELETE FROM contact_recipients WHERE id = :id", { id });
+  await pool.query("DELETE FROM contact_recipients WHERE id = :id", { id });
   return listContactRecipients();
 };
 
 export const createContactSubmission = async (payload) => {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO contact_submissions
         (contact_name, contact_number, contact_email, scope_of_work, message, file_link)
@@ -212,8 +212,8 @@ export const listContactSubmissions = async ({ page = 1, perPage = 20, status, s
     params.search = `%${search}%`;
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const [[{ total }]] = await pool.execute(`SELECT COUNT(*) AS total FROM contact_submissions ${whereSql}`, params);
-  const [rows] = await pool.execute(
+  const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM contact_submissions ${whereSql}`, params);
+  const [rows] = await pool.query(
     `SELECT * FROM contact_submissions ${whereSql} ORDER BY created_at DESC ${paging.sql}`,
     params,
   );
@@ -236,7 +236,7 @@ export const listContactSubmissions = async ({ page = 1, perPage = 20, status, s
 };
 
 export const getContactSubmissionById = async (id) => {
-  const [[row]] = await pool.execute("SELECT * FROM contact_submissions WHERE id = :id LIMIT 1", { id });
+  const [[row]] = await pool.query("SELECT * FROM contact_submissions WHERE id = :id LIMIT 1", { id });
   if (!row) return null;
   return {
     id: row.id,
@@ -254,7 +254,7 @@ export const getContactSubmissionById = async (id) => {
 };
 
 export const updateContactSubmissionStatus = async (id, { status, notes }) => {
-  await pool.execute(
+  await pool.query(
     "UPDATE contact_submissions SET status = :status, notes = :notes WHERE id = :id",
     { id, status, notes: notes || null },
   );
@@ -262,12 +262,12 @@ export const updateContactSubmissionStatus = async (id, { status, notes }) => {
 };
 
 export const markContactSubmissionEmailFailed = async (id, reason) => {
-  await pool.execute(
+  await pool.query(
     "UPDATE contact_submissions SET status = 'email_failed', email_error = :reason WHERE id = :id",
     { id, reason: `${reason || "Email delivery failed"}`.slice(0, 2000) },
   );
 };
 
 export const deleteContactSubmission = async (id) => {
-  await pool.execute("DELETE FROM contact_submissions WHERE id = :id", { id });
+  await pool.query("DELETE FROM contact_submissions WHERE id = :id", { id });
 };

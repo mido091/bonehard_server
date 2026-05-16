@@ -122,7 +122,7 @@ export const verifyOtp = async ({ email, otp }) => {
   const newExpiry      = expiresAt(5);
 
   // Re-use the same row: swap otp_hash → reset_token_hash and extend expiry
-  await pool.execute(
+  await pool.query(
     `UPDATE password_resets
         SET otp_hash   = :resetTokenHash,
             expires_at = :newExpiry
@@ -148,7 +148,7 @@ export const resetPassword = async ({ email, resetToken, newPassword }) => {
 
   const passwordHash = await hashPassword(newPassword);
 
-  await pool.execute(
+  await pool.query(
     `UPDATE users SET password_hash = :passwordHash WHERE email = :email`,
     { passwordHash, email },
   );

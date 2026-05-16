@@ -76,7 +76,138 @@ export const listCaseGeneralNotes = async (caseId, query, options = {}) => {
   );
 
   await attachResourceLinks(rows, "case_note");
+
+  // Attach file attachments to each note so the frontend can render them
+  if (rows.length) {
+    const noteIds = rows.map((r) => r.id).filter(Boolean);
+    if (noteIds.length) {
+      const [fileRows] = await pool.execute(
+        `SELECT f.id, f.note_id AS noteId, f.case_id AS caseId,
+                f.file_name AS fileName, f.file_url AS fileUrl,
+                f.mime_type AS mimeType, f.file_size AS fileSize,
+                f.storage_provider AS storageProvider,
+                f.cloudinary_public_id AS storagePath,
+                f.created_at AS createdAt
+         FROM case_files f
+         WHERE f.note_id IN (${noteIds.map(() => "?").join(",")})
+         ORDER BY f.created_at ASC`,
+        noteIds,
+      );
+      const filesByNote = fileRows.reduce((acc, f) => {
+        (acc[f.noteId] ||= []).push(f);
+        return acc;
+      }, {});
+      rows.forEach((row) => { row.attachments = filesByNote[row.id] || []; });
+    }
+  }
+
   return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+/**
+ * List all files attached to a specific general note.
+ */
+export const listNoteAttachments = async (noteId) => {
+  const [rows] = await pool.execute(
+    `SELECT f.id, f.note_id AS noteId, f.case_id AS caseId,
+            f.file_name AS fileName, f.file_url AS fileUrl,
+            f.mime_type AS mimeType, f.file_size AS fileSize,
+            f.storage_provider AS storageProvider,
+            f.cloudinary_public_id AS storagePath,
+            f.created_at AS createdAt
+     FROM case_files f
+     WHERE f.note_id = :noteId
+     ORDER BY f.created_at ASC`,
+    { noteId },
+  );
+  return rows;
+};
+
+export const getNoteAttachmentById = async (caseId, noteId, fileId) => {
+  const [rows] = await pool.execute(
+    `SELECT f.id, f.note_id AS noteId, f.case_id AS caseId,
+            f.file_name AS fileName, f.file_url AS fileUrl,
+            f.mime_type AS mimeType, f.file_size AS fileSize,
+            f.storage_provider AS storageProvider,
+            f.cloudinary_public_id AS storagePath,
+            f.created_at AS createdAt
+     FROM case_files f
+     WHERE f.id = :fileId AND f.case_id = :caseId AND f.note_id = :noteId
+     LIMIT 1`,
+    { fileId, caseId, noteId },
+  );
+  return rows[0] || null;
+};
+
+export const deleteAllNoteAttachments = async (caseId, noteId) => {
+  const attachments = await listNoteAttachments(noteId);
+  if (!attachments.length) return [];
+
+  await pool.execute(
+    `DELETE FROM case_files WHERE case_id = :caseId AND note_id = :noteId`,
+    { caseId, noteId },
+  );
+
+  return attachments;
+};
+
+/**
+ * Record a file that has been uploaded and link it to a general note.
+ * The file is already in Supabase at this point; we just create the DB row.
+ */
+export const createNoteFileAttachment = async (caseId, noteId, payload, userId) => {
+  const fileUrl = payload.fileUrl || payload.supabasePath || null;
+  if (!payload.fileName || !fileUrl) {
+    throw new Error("Note attachment requires a file name and storage URL");
+  }
+
+  const [result] = await pool.execute(
+    `INSERT INTO case_files (
+       case_id, note_id, uploaded_by, folder_type, upload_category,
+       file_name, file_url, mime_type, file_size,
+       storage_provider, cloudinary_public_id
+     )
+     VALUES (
+       :caseId, :noteId, :userId, 'private', 'photos_documents',
+       :fileName, :fileUrl, :mimeType, :fileSize,
+       :storageProvider, :storagePath
+     )`,
+    {
+      caseId,
+      noteId,
+      userId: userId || null,
+      fileName: cleanUploadDisplayName(payload.fileName),
+      fileUrl,
+      mimeType: payload.mimeType || null,
+      fileSize: payload.fileSize || 0,
+      storageProvider: payload.storageProvider || "supabase",
+      storagePath: payload.storagePath || null,
+    },
+  );
+
+  return result.insertId;
+};
+
+/**
+ * Delete a specific file attachment from a note.
+ * Returns the deleted file row (including storagePath) so the caller can
+ * remove the file from Supabase.
+ */
+export const deleteNoteFileAttachment = async (caseId, noteId, fileId) => {
+  const [rows] = await pool.execute(
+    `SELECT id, file_name AS fileName, file_url AS fileUrl,
+            storage_provider AS storageProvider,
+            cloudinary_public_id AS storagePath
+     FROM case_files
+     WHERE id = :fileId AND case_id = :caseId AND note_id = :noteId
+     LIMIT 1`,
+    { fileId, caseId, noteId },
+  );
+  const file = rows[0] || null;
+  if (!file) return null;
+
+  await pool.execute(`DELETE FROM case_files WHERE id = :fileId`, { fileId });
+  return file;
 };
 
 /** Fetch a single general note by ID (for ownership/update checks). */
@@ -259,7 +390,7 @@ export const createAdminLibraryNote = async (payload, userId) => {
       content: sanitizeRichText(payload.content),
     },
   );
-  return result.insertId;
+  return getAdminLibraryNoteById(result.insertId, { id: userId, role: "admin" });
 };
 
 export const listAdminLibraryNotes = async (query = {}, viewer = {}) => {
@@ -299,7 +430,124 @@ export const listAdminLibraryNotes = async (query = {}, viewer = {}) => {
   );
 
   await attachResourceLinks(rows, "admin_library_note");
+
+  // Attach file attachments to each note
+  if (rows.length) {
+    const noteIds = rows.map((r) => r.id).filter(Boolean);
+    if (noteIds.length) {
+      const [fileRows] = await pool.execute(
+        `SELECT f.id, f.note_id AS noteId, NULL AS caseId,
+                f.file_name AS fileName, f.file_url AS fileUrl,
+                f.mime_type AS mimeType, f.file_size AS fileSize,
+                f.storage_provider AS storageProvider,
+                f.cloudinary_public_id AS storagePath,
+                f.created_at AS createdAt
+         FROM admin_library_files f
+         WHERE f.note_id IN (${noteIds.map(() => "?").join(",")})
+         ORDER BY f.created_at ASC`,
+        noteIds,
+      );
+      const filesByNote = fileRows.reduce((acc, f) => {
+        (acc[f.noteId] ||= []).push(f);
+        return acc;
+      }, {});
+      rows.forEach((row) => { row.attachments = filesByNote[row.id] || []; });
+    }
+  }
+
   return { rows, meta: { page: paging.page, perPage: paging.perPage, total: Number(countRows[0]?.total || 0) } };
+};
+
+export const listAdminNoteAttachments = async (noteId) => {
+  const [rows] = await pool.execute(
+    `SELECT f.id, f.note_id AS noteId, NULL AS caseId,
+            f.file_name AS fileName, f.file_url AS fileUrl,
+            f.mime_type AS mimeType, f.file_size AS fileSize,
+            f.storage_provider AS storageProvider,
+            f.cloudinary_public_id AS storagePath,
+            f.created_at AS createdAt
+     FROM admin_library_files f
+     WHERE f.note_id = :noteId
+     ORDER BY f.created_at ASC`,
+    { noteId },
+  );
+  return rows;
+};
+
+export const deleteAllAdminNoteAttachments = async (noteId) => {
+  const attachments = await listAdminNoteAttachments(noteId);
+  if (!attachments.length) return [];
+
+  await pool.execute(`DELETE FROM admin_library_files WHERE note_id = :noteId`, { noteId });
+  return attachments;
+};
+
+export const createAdminNoteFileAttachment = async (noteId, payload, userId) => {
+  const fileUrl = payload.fileUrl || payload.supabasePath || null;
+  if (!payload.fileName || !fileUrl) {
+    throw new Error("Note attachment requires a file name and storage URL");
+  }
+
+  const [result] = await pool.execute(
+    `INSERT INTO admin_library_files (
+       note_id, uploaded_by, visibility, upload_category,
+       file_name, file_url, mime_type, file_size,
+       storage_provider, cloudinary_public_id
+     )
+     VALUES (
+       :noteId, :userId, 'private', 'photos_documents',
+       :fileName, :fileUrl, :mimeType, :fileSize,
+       :storageProvider, :storagePath
+     )`,
+    {
+      noteId,
+      userId: userId || null,
+      fileName: cleanUploadDisplayName(payload.fileName).slice(0, 255),
+      fileUrl,
+      mimeType: payload.mimeType || null,
+      fileSize: payload.fileSize || 0,
+      storageProvider: payload.storageProvider || "supabase",
+      storagePath: payload.storagePath || null,
+    },
+  );
+
+  return result.insertId;
+};
+
+export const getAdminNoteAttachmentById = async (noteId, fileId, viewer = {}) => {
+  const [rows] = await pool.execute(
+    `SELECT f.id, f.note_id AS noteId, NULL AS caseId,
+            f.file_name AS fileName, f.file_url AS fileUrl,
+            f.mime_type AS mimeType, f.file_size AS fileSize,
+            f.storage_provider AS storageProvider,
+            f.cloudinary_public_id AS storagePath,
+            f.created_at AS createdAt
+     FROM admin_library_files f
+     INNER JOIN admin_library_notes n ON n.id = f.note_id
+     WHERE f.id = :fileId
+       AND f.note_id = :noteId
+       AND (n.visibility = 'public' OR n.created_by = :viewerId OR :viewerRole IN ('admin', 'assistant'))
+     LIMIT 1`,
+    { fileId, noteId, viewerId: viewer.id || 0, viewerRole: viewer.role || "" },
+  );
+  return rows[0] || null;
+};
+
+export const deleteAdminNoteFileAttachment = async (noteId, fileId) => {
+  const [rows] = await pool.execute(
+    `SELECT id, file_name AS fileName, file_url AS fileUrl,
+            storage_provider AS storageProvider,
+            cloudinary_public_id AS storagePath
+     FROM admin_library_files
+     WHERE id = :fileId AND note_id = :noteId
+     LIMIT 1`,
+    { fileId, noteId },
+  );
+  const file = rows[0] || null;
+  if (!file) return null;
+
+  await pool.execute(`DELETE FROM admin_library_files WHERE id = :fileId`, { fileId });
+  return file;
 };
 
 export const getAdminLibraryNoteById = async (noteId, viewer = {}) => {
@@ -508,7 +756,7 @@ export const createCaseTimer = async (caseId, payload, userId) => {
 
 export const listCaseFiles = async (caseId, query) => {
   const paging = toLimitOffsetSql(query);
-  const where = ["f.case_id = :caseId"];
+  const where = ["f.case_id = :caseId", "f.note_id IS NULL"];
   const params = { caseId };
 
   if (query.folderType) {
@@ -549,7 +797,7 @@ export const listCaseFiles = async (caseId, query) => {
 
 export const listCaseFilesGlobal = async (query = {}, viewer = {}) => {
   const paging = toLimitOffsetSql(query);
-  const where = ["c.is_archived = 0"];
+  const where = ["c.is_archived = 0", "f.note_id IS NULL"];
   const params = {};
 
   if (query.search) {
@@ -612,7 +860,7 @@ export const createAdminLibraryFile = async (payload, userId, connection = pool)
     `
       INSERT INTO admin_library_files (
         uploaded_by, visibility, upload_category, upload_category_other_label,
-        file_name, file_url, mime_type, file_size, storage_provider, storage_path
+        file_name, file_url, mime_type, file_size, storage_provider, cloudinary_public_id
       )
       VALUES (
         :userId, :visibility, :uploadCategory, :uploadCategoryOtherLabel,
@@ -639,7 +887,7 @@ export const createAdminLibraryFile = async (payload, userId, connection = pool)
 
 export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
   const paging = toLimitOffsetSql(query);
-  const where = ["1 = 1"];
+  const where = ["lf.note_id IS NULL"];
   const params = { viewerId: viewer.id || 0 };
 
   if (query.search) {
@@ -663,7 +911,7 @@ export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
         lf.visibility AS folderType, lf.upload_category AS uploadCategory,
         lf.upload_category_other_label AS uploadCategoryOtherLabel, lf.file_name AS fileName,
         lf.file_url AS fileUrl, lf.mime_type AS mimeType, lf.file_size AS fileSize,
-        lf.storage_provider AS storageProvider, lf.storage_path AS cloudinaryPublicId,
+        lf.storage_provider AS storageProvider, lf.cloudinary_public_id AS cloudinaryPublicId,
         lf.uploaded_by AS uploadedBy,
         u.name AS uploadedByName, lf.created_at AS createdAt, COALESCE(lf.updated_at, lf.created_at) AS updatedAt,
         CASE WHEN :viewerRole IN ('admin', 'assistant') OR lf.uploaded_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
@@ -677,7 +925,7 @@ export const listAdminLibraryFiles = async (query = {}, viewer = {}) => {
   );
 
   const [countRows] = await pool.execute(
-    `SELECT COUNT(*) AS total FROM admin_library_files WHERE ${where.join(" AND ")}`,
+    `SELECT COUNT(*) AS total FROM admin_library_files lf WHERE ${where.join(" AND ")}`,
     params,
   );
 
@@ -689,8 +937,9 @@ export const getAdminLibraryFileById = async (fileId, viewer = {}) => {
     `
       SELECT id, uploaded_by AS uploadedBy, visibility AS folderType, upload_category AS uploadCategory,
         upload_category_other_label AS uploadCategoryOtherLabel, file_name AS fileName, file_url AS fileUrl,
-        mime_type AS mimeType, file_size AS fileSize, storage_provider AS storageProvider,
-        storage_path AS cloudinaryPublicId, created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt,
+        mime_type AS mimeType, file_size AS fileSize,
+        storage_provider AS storageProvider, cloudinary_public_id AS cloudinaryPublicId,
+        created_at AS createdAt, COALESCE(updated_at, created_at) AS updatedAt,
         CASE WHEN :viewerRole IN ('admin', 'assistant') OR uploaded_by = :viewerId THEN TRUE ELSE FALSE END AS canManage
       FROM admin_library_files
       WHERE id = :fileId AND (visibility = 'public' OR uploaded_by = :viewerId OR :viewerRole IN ('admin', 'assistant'))

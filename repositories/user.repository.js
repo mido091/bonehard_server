@@ -15,7 +15,7 @@ const publicUserFields = `
 const getUsersCapabilities = async () => {
   if (usersCapabilities) return usersCapabilities;
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `
       SELECT column_name AS columnName
       FROM information_schema.columns
@@ -53,7 +53,7 @@ const userSelectFields = async ({ includePassword = false } = {}) => {
 
 export const getUserByEmail = async (email) => {
   const fields = await userSelectFields({ includePassword: true });
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT ${fields} FROM users WHERE email = :email LIMIT 1`,
     { email },
   );
@@ -63,7 +63,7 @@ export const getUserByEmail = async (email) => {
 
 export const getUserById = async (id) => {
   const fields = await userSelectFields();
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT ${fields} FROM users WHERE id = :id LIMIT 1`,
     { id },
   );
@@ -77,7 +77,7 @@ export const createUser = async ({ name, email, passwordHash, phone = null, addr
   const isActiveSql = capabilities.hasIsActive ? ", is_active" : "";
   const isActiveValueSql = capabilities.hasIsActive ? ", 1" : "";
 
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `
       INSERT INTO users (name, email, password_hash, phone, address, role${isActiveSql})
       VALUES (:name, :email, :passwordHash, :phone, :address, 'user'${isActiveValueSql})
@@ -97,7 +97,7 @@ export const createUser = async ({ name, email, passwordHash, phone = null, addr
 export const getAssignableUsers = async () => {
   const capabilities = await getUsersCapabilities();
   const activeFilter = capabilities.hasIsActive ? "AND is_active = 1" : "";
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT id, name, email, role FROM users WHERE role IN ('admin', 'assistant', 'user') ${activeFilter} ORDER BY name ASC`,
   );
 
@@ -105,7 +105,7 @@ export const getAssignableUsers = async () => {
 };
 
 export const countUsersByRole = async () => {
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT role, COUNT(*) AS total FROM users GROUP BY role`,
   );
 

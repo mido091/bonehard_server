@@ -13,7 +13,7 @@ if (!email || !password) {
 try {
   const passwordHash = await hashPassword(password);
 
-  await pool.execute(
+  await pool.query(
     `
       INSERT INTO users (name, email, password_hash, role)
       VALUES (:name, :email, :passwordHash, 'admin')

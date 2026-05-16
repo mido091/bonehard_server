@@ -2,7 +2,7 @@ import { pool } from "../config/db.js";
 import { toLimitOffsetSql } from "../utils/db.js";
 
 export async function createOrder({ contactName, contactNumber, contactEmail, scopeOfWork, fileLink }) {
-  const [result] = await pool.execute(
+  const [result] = await pool.query(
     `INSERT INTO orders (contact_name, contact_number, contact_email, scope_of_work, file_link)
      VALUES (?, ?, ?, ?, ?)`,
     [contactName, contactNumber, contactEmail, scopeOfWork, fileLink || null]
@@ -22,12 +22,12 @@ export async function listOrders({ page = 1, limit = 20, status } = {}) {
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  const [[{ total }]] = await pool.execute(
+  const [[{ total }]] = await pool.query(
     `SELECT COUNT(*) AS total FROM orders ${where}`,
     params
   );
 
-  const [rows] = await pool.execute(
+  const [rows] = await pool.query(
     `SELECT * FROM orders ${where} ORDER BY created_at DESC ${paging.sql}`,
     params
   );
@@ -39,17 +39,17 @@ export async function listOrders({ page = 1, limit = 20, status } = {}) {
 }
 
 export async function getOrderById(id) {
-  const [[row]] = await pool.execute(`SELECT * FROM orders WHERE id = ?`, [id]);
+  const [[row]] = await pool.query(`SELECT * FROM orders WHERE id = ?`, [id]);
   return row || null;
 }
 
 export async function updateOrderStatus(id, status, notes = null) {
-  await pool.execute(
+  await pool.query(
     `UPDATE orders SET status = ?, notes = ? WHERE id = ?`,
     [status, notes, id]
   );
 }
 
 export async function deleteOrder(id) {
-  await pool.execute(`DELETE FROM orders WHERE id = ?`, [id]);
+  await pool.query(`DELETE FROM orders WHERE id = ?`, [id]);
 }
