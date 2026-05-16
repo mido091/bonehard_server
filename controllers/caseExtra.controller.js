@@ -6,6 +6,12 @@ import {
 import { Readable } from "node:stream";
 import path from "node:path";
 import {
+  CASE_ALLOWED_UPLOAD_EXTENSIONS,
+  CASE_ALLOWED_UPLOAD_HINT,
+  FILE_UPLOAD_CATEGORY_VALUES,
+  MAX_CASE_FILE_SIZE_BYTES,
+} from "../constants/uploadOptions.js";
+import {
   createCaseGenerator,
   createCaseFile,
   createCaseGeneralNote,
@@ -96,6 +102,86 @@ import {
   removeTempUploadFile,
 } from "../services/supabase.service.js";
 import { ApiError, sendSuccess } from "../utils/apiResponse.js";
+
+const allowedUploadCategorySet = new Set(FILE_UPLOAD_CATEGORY_VALUES);
+
+const normalizeFinalizeFileList = (body = {}) => {
+  const rawFiles = Array.isArray(body.files)
+    ? body.files
+    : Array.isArray(body.uploadedFiles)
+      ? body.uploadedFiles
+      : body.storagePath
+        ? [body]
+        : [];
+
+  if (!rawFiles.length) {
+    throw new ApiError(422, "Select at least one file to upload");
+  }
+
+  return rawFiles.map((file) => {
+    const fileName = String(file.fileName || "").trim();
+    const storagePath = String(file.storagePath || "").replace(/^\/+/, "");
+    const fileSize = Number(file.fileSize || 0);
+    const extension = path.extname(fileName).toLowerCase();
+    const uploadCategory = allowedUploadCategorySet.has(file.uploadCategory)
+      ? file.uploadCategory
+      : "photos_documents";
+    const uploadCategoryOtherLabel = String(file.uploadCategoryOtherLabel || "").trim().slice(0, 120);
+
+    if (!fileName || !storagePath) {
+      throw new ApiError(422, "Uploaded file metadata is incomplete");
+    }
+    if (!CASE_ALLOWED_UPLOAD_EXTENSIONS.includes(extension)) {
+      throw new ApiError(415, `${fileName} has an invalid extension. ${CASE_ALLOWED_UPLOAD_HINT}`);
+    }
+    if (fileSize > MAX_CASE_FILE_SIZE_BYTES) {
+      throw new ApiError(413, `${fileName} exceeds the 1GB per-file upload limit`);
+    }
+    if (!storagePath.startsWith("cases/") || /^https?:\/\//i.test(storagePath)) {
+      throw new ApiError(422, "Uploaded file storage path is invalid");
+    }
+    if (uploadCategory === "other" && uploadCategoryOtherLabel.length < 2) {
+      throw new ApiError(422, "Custom category name is required when category is Other");
+    }
+
+    return {
+      storagePath,
+      fileName,
+      mimeType: file.mimeType || "application/octet-stream",
+      fileSize,
+      uploadCategory,
+      uploadCategoryOtherLabel,
+      visibility: file.visibility === "public" ? "public" : "private",
+    };
+  });
+};
+
+const assertFinalizeStorageScope = (files, folderKeys) => {
+  const prefixes = folderKeys
+    .filter(Boolean)
+    .map((key) => `cases/${String(key).replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")}/`);
+
+  files.forEach((file) => {
+    if (!prefixes.some((prefix) => file.storagePath.startsWith(prefix))) {
+      throw new ApiError(422, "Uploaded file does not belong to this save operation");
+    }
+  });
+};
+
+const finalizedCaseFilePayload = (file, folderType = "private") => ({
+  folderType,
+  uploadCategory: file.uploadCategory,
+  uploadCategoryOtherLabel: file.uploadCategoryOtherLabel,
+  fileName: file.fileName,
+  fileUrl: file.storagePath,
+  mimeType: file.mimeType,
+  fileSize: file.fileSize,
+  storageProvider: "supabase",
+  cloudinaryPublicId: file.storagePath,
+  cloudinaryResourceType: null,
+  cloudinarySecureUrl: null,
+  cloudinaryVersion: null,
+});
 
 const removeStoredAttachments = async (attachments = []) => {
   await Promise.all(
@@ -216,6 +302,35 @@ export const uploadNoteAttachments = async (req, res) => {
   });
 
   await Promise.all(uploadPromises);
+
+  const attachments = await listNoteAttachments(noteId);
+  sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });
+};
+
+export const finalizeNoteAttachments = async (req, res) => {
+  const caseId = Number(req.params.id);
+  const noteId = Number(req.params.noteId);
+  await getCaseDetails(caseId);
+
+  const note = await getCaseGeneralNoteById(caseId, noteId);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const files = normalizeFinalizeFileList(req.body);
+  assertFinalizeStorageScope(files, [caseId]);
+
+  try {
+    await Promise.all(files.map((file) => createNoteFileAttachment(caseId, noteId, {
+      fileName: file.fileName,
+      fileUrl: file.storagePath,
+      mimeType: file.mimeType,
+      fileSize: file.fileSize,
+      storageProvider: "supabase",
+      storagePath: file.storagePath,
+    }, req.user?.id || null)));
+  } catch (error) {
+    await Promise.allSettled(files.map((file) => deleteSupabaseFile(file.storagePath)));
+    throw error;
+  }
 
   const attachments = await listNoteAttachments(noteId);
   sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });
@@ -357,6 +472,27 @@ export const uploadFiles = async (req, res) => {
   sendSuccess(res, { data: result.rows, meta: result.meta, message: "Files uploaded", status: 201 });
 };
 
+export const finalizeFiles = async (req, res) => {
+  const caseId = Number(req.params.id);
+  await getCaseDetails(caseId);
+
+  const folderType = req.body.folderType === "public" ? "public" : "private";
+  const files = normalizeFinalizeFileList(req.body);
+  assertFinalizeStorageScope(files, [caseId]);
+
+  try {
+    await Promise.all(files.map((file) =>
+      createCaseFile(caseId, finalizedCaseFilePayload(file, folderType), req.user?.id || null),
+    ));
+  } catch (error) {
+    await Promise.allSettled(files.map((file) => deleteSupabaseFile(file.storagePath)));
+    throw error;
+  }
+
+  const result = await listCaseFiles(caseId, { page: 1, perPage: 20 });
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: "Files uploaded", status: 201 });
+};
+
 export const globalFiles = async (req, res) => {
   const query = req.validatedQuery || req.query;
   const fetchQuery = workspaceFetchQuery(query);
@@ -404,6 +540,46 @@ export const uploadGeneralFile = async (req, res) => {
   }
   const result = await listAdminLibraryFiles({ page: 1, perPage: 20 }, req.user);
   sendSuccess(res, { data: result.rows, meta: result.meta, message: `${uploaded.length} file(s) uploaded`, status: 201 });
+};
+
+export const finalizeGeneralFile = async (req, res) => {
+  const visibility = req.body.visibility === "public" ? "public" : "private";
+  const uploadCategory = allowedUploadCategorySet.has(req.body.uploadCategory) ? req.body.uploadCategory : "general";
+  const uploadCategoryOtherLabel = String(req.body.uploadCategoryOtherLabel || "").trim().slice(0, 120);
+  if (uploadCategory === "other" && uploadCategoryOtherLabel.length < 2) {
+    throw new ApiError(422, "Custom category name is required when category is Other");
+  }
+
+  const files = normalizeFinalizeFileList({
+    ...req.body,
+    files: (req.body.files || req.body.uploadedFiles || []).map((file) => ({
+      ...file,
+      visibility,
+      uploadCategory,
+      uploadCategoryOtherLabel,
+    })),
+  });
+  assertFinalizeStorageScope(files, ["general-library"]);
+
+  try {
+    await Promise.all(files.map((file) => createAdminLibraryFile({
+      visibility,
+      uploadCategory,
+      uploadCategoryOtherLabel,
+      fileName: file.fileName,
+      fileUrl: file.storagePath,
+      mimeType: file.mimeType,
+      fileSize: file.fileSize,
+      storageProvider: "supabase",
+      storagePath: file.storagePath,
+    }, req.user.id)));
+  } catch (error) {
+    await Promise.allSettled(files.map((file) => deleteSupabaseFile(file.storagePath)));
+    throw error;
+  }
+
+  const result = await listAdminLibraryFiles({ page: 1, perPage: 20 }, req.user);
+  sendSuccess(res, { data: result.rows, meta: result.meta, message: `${files.length} file(s) uploaded`, status: 201 });
 };
 
 export const downloadGeneralFile = async (req, res) => {
@@ -512,6 +688,32 @@ export const uploadAdminNoteAttachments = async (req, res) => {
   });
 
   await Promise.all(uploadPromises);
+
+  const attachments = await listAdminNoteAttachments(noteId);
+  sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });
+};
+
+export const finalizeAdminNoteAttachments = async (req, res) => {
+  const noteId = Number(req.params.noteId);
+  const note = await getAdminLibraryNoteById(noteId, req.user);
+  if (!note) throw new ApiError(404, "Note not found");
+
+  const files = normalizeFinalizeFileList(req.body);
+  assertFinalizeStorageScope(files, [`general-note-${noteId}`]);
+
+  try {
+    await Promise.all(files.map((file) => createAdminNoteFileAttachment(noteId, {
+      fileName: file.fileName,
+      fileUrl: file.storagePath,
+      mimeType: file.mimeType,
+      fileSize: file.fileSize,
+      storageProvider: "supabase",
+      storagePath: file.storagePath,
+    }, req.user?.id || null)));
+  } catch (error) {
+    await Promise.allSettled(files.map((file) => deleteSupabaseFile(file.storagePath)));
+    throw error;
+  }
 
   const attachments = await listAdminNoteAttachments(noteId);
   sendSuccess(res, { data: attachments, message: "Attachments uploaded", status: 201 });

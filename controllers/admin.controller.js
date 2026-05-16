@@ -9,6 +9,7 @@ import {
   getAdminUserOrderDetails,
   getAdminUserOrderNotes,
   getAdminUserOrders,
+  finalizeAdminFilesToOrder,
   renameAdminUserOrderFile,
   setAdminUserOrderStatus,
   updateAdminUserOrderNote,
@@ -156,6 +157,17 @@ export const uploadAdminOrderFile = async (req, res) => {
   const item = await uploadAdminFilesToOrder(
     req.params.id,
     req.files || [],
+    req.user.id,
+    folderType,
+  );
+  sendSuccess(res, { data: item, message: 'Files uploaded', status: 201 });
+};
+
+export const finalizeAdminOrderFile = async (req, res) => {
+  const { folderType = 'private', files, uploadedFiles } = req.body || {};
+  const item = await finalizeAdminFilesToOrder(
+    req.params.id,
+    files || uploadedFiles || [],
     req.user.id,
     folderType,
   );

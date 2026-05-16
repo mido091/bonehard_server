@@ -240,6 +240,49 @@ export const uploadAdminFilesToOrder = async (orderId, files, userId, folderType
   return getAdminUserOrderDetails(orderId);
 };
 
+export const finalizeAdminFilesToOrder = async (orderId, uploadedFiles, userId, folderType = 'private') => {
+  const order = await ensureAdminUserOrderExists(orderId);
+  const directFiles = parseDirectUploadedFiles(uploadedFiles);
+  if (!directFiles.length) return getAdminUserOrderDetails(orderId);
+
+  assertDirectUploadsAreScoped(directFiles, orderId);
+  const normalizedFolderType = folderType === 'public' ? 'public' : 'private';
+
+  try {
+    await Promise.all(
+      directFiles.map((directFile) => {
+        const uploadResult = {
+          supabasePath: directFile.storagePath,
+          fileUrl: directFile.storagePath,
+          fileName: directFile.fileName,
+          fileSize: directFile.fileSize,
+        };
+
+        return createCaseFile(
+          orderId,
+          toDirectCaseFilePayload(directFile, uploadResult, normalizedFolderType),
+          userId,
+        );
+      }),
+    );
+
+    if (normalizedFolderType === 'public' && order.targetId) {
+      await notifyUser({
+        userId: order.targetId,
+        type: 'order',
+        title: 'New Files Uploaded',
+        body: `${directFiles.length} new file${directFiles.length === 1 ? '' : 's'} have been added to your order "${order.name}".`,
+        data: { orderId },
+      });
+    }
+  } catch (error) {
+    await Promise.allSettled(directFiles.map((file) => deleteSupabaseFile(file.storagePath)));
+    throw error;
+  }
+
+  return getAdminUserOrderDetails(orderId);
+};
+
 /** Delete a file from an order (admin/assistant, no ownership restriction). */
 export const deleteAdminOrderFile = async (orderId, fileId) => {
   await ensureAdminUserOrderExists(orderId);
@@ -385,6 +428,7 @@ const toCaseFilePayload = (multerFile, uploadResult, uploadCategory = "photos_do
 const toDirectCaseFilePayload = (directFile, uploadResult, folderType = "private") => ({
   folderType,
   uploadCategory:          directFile.uploadCategory || "photos_documents",
+  uploadCategoryOtherLabel: directFile.uploadCategoryOtherLabel || null,
   fileName:                uploadResult.fileName || directFile.fileName,
   fileUrl:                 uploadResult.fileUrl || uploadResult.supabasePath,
   mimeType:                directFile.mimeType || "application/octet-stream",

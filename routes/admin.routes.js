@@ -19,6 +19,7 @@ import {
   teamOptions,
   userOptions,
   exportUserOrderPackage,
+  finalizeAdminOrderFile,
   removeUserOrder,
   renameUserOrderFile,
   updateUserOrderNote,
@@ -103,6 +104,7 @@ router.get("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"),
 router.post("/user-orders/:id/team-notes", validate(caseIdParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(createUserOrderNote));
 router.patch("/user-orders/:id/team-notes/:noteId", validate(userOrderNoteParamSchema, "params"), validate(generalNotePayloadSchema), asyncHandler(updateUserOrderNote));
 router.delete("/user-orders/:id/team-notes/:noteId", validate(userOrderNoteParamSchema, "params"), asyncHandler(deleteUserOrderNote));
+router.post("/user-orders/:id/files/finalize", validate(caseIdParamSchema, "params"), uploadLimiter, asyncHandler(finalizeAdminOrderFile));
 router.post("/user-orders/:id/files", validate(caseIdParamSchema, "params"), uploadLimiter, handleCaseFileUpload, asyncHandler(uploadAdminOrderFile));
 router.delete("/user-orders/:id/files/:fileId", validate(userOrderFileParamSchema, "params"), asyncHandler(deleteAdminOrderFileHandler));
 router.get("/user-orders/:id/export-package", validate(caseIdParamSchema, "params"), asyncHandler(exportUserOrderPackage));
